@@ -58,8 +58,8 @@ endif
 all:
 	make -C $(KDIR) M=$(PWD) modules
 	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179_programmer.c -o ax88179_programmer
-	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_programmer.c -o ax88179a_772d_programmer
-	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_ieee.c -o ax88179a_772d_ieee
+	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_programmer.c -o ax88179b_179a_772e_772d_programmer
+	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_ieee.c -o ax88179b_179a_772e_772d_ieee
 	$(CC) $(TOOL_EXTRA_CFLAGS) axcmd.c -o axcmd
 
 install:

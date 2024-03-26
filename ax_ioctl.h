@@ -28,14 +28,14 @@
 // CHANGE NETWORK INTERFACE WAY
 // DEFAULT_SCAN   : scan "eth0" - "eth255"
 // INTERFACE_SCAN : scan all available network interfaces
-#define NET_INTERFACE	DEFAULT_SCAN
+#define NET_INTERFACE	INTERFACE_SCAN
 #define DEFAULT_SCAN	0x00
 #define INTERFACE_SCAN	0x01
 
 #define AX88179_SIGNATURE	"AX88179_178A"
 #define AX88179_DRV_NAME	"AX88179_178A"
-#define AX88179A_SIGNATURE	"AX88179A_772D"
-#define AX88179A_DRV_NAME	"AX88179A_772D"
+#define AX88179A_SIGNATURE	"AX88179B_179A_772E_772D"
+#define AX88179A_DRV_NAME	"AX88179B_179A_772E_772D"
 
 #define AX_PRIVATE		SIOCDEVPRIVATE
 
@@ -128,7 +128,7 @@ struct _ax88179a_autosuspend {
 
 struct _ax_ioctl_command {
 	unsigned short	ioctl_cmd;
-	unsigned char	sig[16];
+	unsigned char	sig[32];
 	unsigned char	type;
 	unsigned short *buf;
 	unsigned short size;

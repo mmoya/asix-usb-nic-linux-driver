@@ -42,51 +42,51 @@ fprintf(stderr, "%s: Fail to allocate memory.\n", __func__)
 fprintf(stderr, "%s: Read file failed.\n", __func__)
 
 #define AX88179A_IOCTL_VERSION \
-"AX88179A/AX88772D Linux Flash/eFuse Programming Tool v1.2.0 beta1"
+"AX88179B/AX88179A/AX88772E/AX88772D Linux Flash/eFuse Programming Tool v2.0.0"
 
 const char help_str1[] =
-"./ax88179a_772d_programmer help [command]\n"
+"./ax88179b_179a_772e_772d_programmer help [command]\n"
 "    -- command description\n";
 const char help_str2[] =
 "        [command] - Display usage of specified command\n";
 
 const char readverion_str1[] =
-"./ax88179a_772d_programmer rversion\n"
-"    -- AX88179A_772D Read Firmware Verion\n";
+"./ax88179b_179a_772e_772d_programmer rversion\n"
+"    -- AX88179B_179A_772E_772D Read Firmware Verion\n";
 static const char readverion_str2[] = "";
 
 const char readmac_str1[] =
-"./ax88179a_772d_programmer rmacaddr\n"
-"    -- AX88179A_772D Read MAC Address\n";
+"./ax88179b_179a_772e_772d_programmer rmacaddr\n"
+"    -- AX88179B_179A_772E_772D Read MAC Address\n";
 static const char readmac_str2[] = "";
 
 const char writeflash_str1[] =
-"./ax88179a_772d_programmer wflash [file]\n"
-"    -- AX88179A_772D Write Flash\n";
+"./ax88179b_179a_772e_772d_programmer wflash [file]\n"
+"    -- AX88179B_179A_772E_772D Write Flash\n";
 const char writeflash_str2[] =
 "        [file]    - Flash file path\n";
 
 const char writeefuse_str1[] =
-"./ax88179a_772d_programmer wefuse -m [MAC] -s [SN] -f [File] --led0 [value]"
+"./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -f [File] --led0 [value]"
 " --led1 [value] -p [device]\n"
-"    -- AX88179A_772D Write eFuse\n";
+"    -- AX88179B_179A_772E_772D Write eFuse\n";
 const char writeefuse_str2[] =
 "        -m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)\n"
 "        -s [SN]     - Serial number\n"
 "        -f [File]   - eFuse file path\n"
 "        --led0 [value]   - value: control_blink (XXXX_XXXX)\n"
 "        --led1 [value]   - value: control_blink (XXXX_XXXX)\n"
-"        -p [device] - device: \"AX88179A\" or \"AX88772D\"\n";
+"        -p [device] - device: \"AX88179B\" or \"AX88179A\" or \"AX88772E\" or \"AX88772D\"\n";
 
 const char readefuse_str1[] =
-"./ax88179a_772d_programmer refuse -f [File]\n"
-"    -- AX88179A_772D Read eFuse\n";
+"./ax88179b_179a_772e_772d_programmer refuse -f [File]\n"
+"    -- AX88179B_179A_772E_772D Read eFuse\n";
 const char readefuse_str2[] =
 "        -f [File]   - eFuse file path\n";
 
 const char reload_str1[] =
-"./ax88179a_772d_programmer reload\n"
-"    -- AX88179A_772D Reload\n";
+"./ax88179b_179a_772e_772d_programmer reload\n"
+"    -- AX88179B_179A_772E_772D Reload\n";
 static const char reload_str2[] = "";
 
 static int help_func(struct ax_command_info *info);
@@ -1170,7 +1170,9 @@ static int writeefuse_func(struct ax_command_info *info)
 		case 'p':
 			argument.device = optarg;
 			DEBUG_PRINT("%s \r\n", argument.device);
-			if (strcasecmp(argument.device , "AX88179A") &&
+			if (strcasecmp(argument.device , "AX88179B") &&
+			    strcasecmp(argument.device , "AX88179A") &&
+				strcasecmp(argument.device , "AX88772E") &&
 			    strcasecmp(argument.device , "AX88772D"))
 				return print_msg("wefuse");
 			break;	

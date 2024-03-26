@@ -123,7 +123,9 @@ int ax_get_link_ksettings(struct net_device *netdev,
 	mii_ethtool_get_link_ksettings(&axdev->mii, cmd);
 
 #ifdef ENABLE_AX88279
+	printk("============AX88279==========");
 	if (axdev->chip_version == AX_VERSION_AX88279) {
+#if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 			 cmd->link_modes.supported, 1);
 
@@ -134,7 +136,16 @@ int ax_get_link_ksettings(struct net_device *netdev,
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 				 cmd->link_modes.lp_advertising,
 				 1);
+#else
+		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+			 cmd->link_modes.supported);
 
+		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+				 cmd->link_modes.advertising);
+
+		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+				 cmd->link_modes.lp_advertising);
+#endif
 		if (axdev->intr_link_info.eth_speed == ETHER_LINK_2500)
 			cmd->base.speed = SPEED_2500;
 	}

@@ -128,56 +128,56 @@ directory and execute the following commands:
 	$sudo ./ax88179_programmer weeprom help
 	$sudo ./ax88179_programmer chgmac help
 
-=== AX88179A/772D Flash/eFuse Programmer
+=== AX88179B/179A/772E/772D Flash/eFuse Programmer
 1. If you want to get help message for specific command, go to the driver 
 directory and execute the following command:
-	$sudo ./ax88179a_772d_programmer help [command]
+	$sudo ./ax88179b_179a_772e_772d_programmer help [command]
 
 2. If you want to get the version of firmware, go to the driver directory 
 and execute the following command:
-	$sudo ./ax88179a_772d_programmer rversion
+	$sudo ./ax88179b_179a_772e_772d_programmer rversion
 
 3. If you want to get the MAC address, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88179a_772d_programmer rmacaddr
+	$sudo ./ax88179b_179a_772e_772d_programmer rmacaddr
 
 4. If you want to write values of a file to the flash, go to the driver 
 directory and execute the following command:
-	$sudo ./ax88179a_772d_programmer wflash [file]
+	$sudo ./ax88179b_179a_772e_772d_programmer wflash [file]
 
 5. If you want to write the eFuse, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88179a_772d_programmer wefuse -m [MAC] -s [SN] -f [File]
+	$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -f [File]
 	--led0 [value] --led1 [value] -p [device]
 		-m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)
 		-s [SN]     - Serial number
 		-f [File]   - eFuse file path
 		--led0 [value]   - value: control_blink (XXXX_XXXX)
 		--led1 [value]   - value: control_blink (XXXX_XXXX)
-		-p [device] - device: "AX88179A" or "AX88772D"
+		-p [device] - device: "AX88179B" or "AX88179A" or "AX88772E" or "AX88772D" 
 	example: 
-		$sudo ./ax88179a_772d_programmer wefuse -m 00:0E:C6:81:79:01 
+		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:81:79:01 
 		-s 00000000000001 -f eFuse_Dump.txt
 
-		$sudo ./ax88179a_772d_programmer wefuse -m 00:0E:C6:81:79:01 
+		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:81:79:01 
 		-s 0000000000179A --led0 8007_0000 --led1 8000_003F -p AX88179A
 
-		$sudo ./ax88179a_772d_programmer wefuse -m 00:0E:C6:87:72:D1
+		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:87:72:D1
 		-s 0000000000772D -p AX88772D
 
 6. If you want to read the eFuse, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88179a_772d_programmer refuse -f [File]
+	$sudo ./ax88179b_179a_772e_772d_programmer refuse -f [File]
 
 7. If you want to reload the flash or eFuse to check version or MAC address 
 and so, go to the driver directory and execute the following command:
-	$sudo ./ax88179a_772d_programmer reload
+	$sudo ./ax88179b_179a_772e_772d_programmer reload
 
-=== AX88179A/772D IEEE Test Tool
+=== AX88179B/179A/772E/772D IEEE Test Tool
 1. If you want to execute IEEE test, go to the driver directory and execute the following command:
 
-	$sudo ./ax88179a_772d_ieee ieeetest speed option
-	    -- AX88179A_772D IEEE Test Tool
+	$sudo ./ax88179b_179a_772e_772d_ieee ieeetest speed option
+	    -- AX88179B_179A_772E_772D IEEE Test Tool
 		[speed]    - 1000: 1000Mbps,  100: 100Mbps,  10: 10Mbps
 		[option]   - For 1000Mbps
 				M1: Mode 1

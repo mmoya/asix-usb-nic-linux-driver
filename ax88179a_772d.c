@@ -658,8 +658,13 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			_MDIO_WRITE(0x0E, 0x027B);
 			_MDIO_WRITE(0x0D, 0x401F);
 			_MDIO_WRITE(0x0E, 0x1177);
+			_MDIO_WRITE(0x00, 0x0800);
 			_MDIO_WRITE(0x1F, 0x0001);
 			_MDIO_WRITE(0x1D, 0xF842);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x01A3, 0x2);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x01A4, 0x110e);
+			_MDIO_WRITE(0x1F, 0x0000);
+			_MDIO_WRITE(0x00, 0x0100);
 			break;
 		case IEEE_10FF:
 			ret = ax88179a_set_phy_power(axdev, false);
@@ -679,8 +684,12 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			_MDIO_WRITE(0x0E, 0x027B);
 			_MDIO_WRITE(0x0D, 0x401F);
 			_MDIO_WRITE(0x0E, 0x1177);
+			_MDIO_WRITE(0x00, 0x0800);
 			_MDIO_WRITE(0x1F, 0x0001);
 			_MDIO_WRITE(0x1D, 0xF840);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x01A3, 0x0000);
+			_MDIO_WRITE(0x1F, 0x0000);
+			_MDIO_WRITE(0x00, 0x0100);
 			break;
 		case IEEE_10MDI:
 			_MDIO_WRITE(0x00, 0x0100);

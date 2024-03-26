@@ -802,6 +802,7 @@ static int ax88179_bind(struct ax_device *axdev)
 	netdev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			       NETIF_F_SG | NETIF_F_TSO | NETIF_F_FRAGLIST;
 
+	netdev->max_mtu = (9 * 1024);
 	axdev->tx_casecade_size = TX_CASECADES_SIZE;
 	axdev->gso_max_size = AX_GSO_DEFAULT_SIZE;
 	axdev->mii.supports_gmii = 1;
@@ -1169,6 +1170,57 @@ static int ax88179_system_resume(struct ax_device *axdev)
 	return 0;
 }
 
+static int ax88179_runtime_suspend(struct ax_device *axdev)
+{
+       u16 reg16;
+#if 0
+       ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg16,
+                        1);
+       reg16 &= ~AX_MONITOR_MODE_RWLC;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg16);
+#endif
+       ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2,
+                        &reg16, 1);
+       reg16 &= ~AX_MEDIUM_RECEIVE_EN;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2,
+                         &reg16);
+       ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PHYPWR_RSTCTL, 2, 2, &reg16,
+                        1);
+       reg16 |= AX_PHYPWR_RSTCTL_IPRL;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PHYPWR_RSTCTL, 2, 2, &reg16);
+       reg16 = AX_RX_CTL_STOP;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+       return 0;
+}
+
+static int ax88179_runtime_resume(struct ax_device *axdev)
+{
+       u16 reg16;
+       u8 reg8;
+       reg16 = 0;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PHYPWR_RSTCTL, 2, 2, &reg16);
+#if KERNEL_VERSION(2, 6, 36) <= LINUX_VERSION_CODE
+       usleep_range(1000, 2000);
+#else
+       msleep(20);
+#endif
+       reg16 = AX_PHYPWR_RSTCTL_IPRL;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PHYPWR_RSTCTL, 2, 2, &reg16);
+       msleep(200);
+       ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_CLK_SELECT, 1, 1, &reg8, 0);
+       reg8 |= AX_CLK_SELECT_ACS | AX_CLK_SELECT_BCS;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_CLK_SELECT, 1, 1, &reg8);
+       msleep(100);
+       ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2,
+                        &reg16, 1);
+       reg16 |= AX_MEDIUM_RECEIVE_EN;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2,
+                         &reg16);
+       reg16 = AX_RX_CTL_START | AX_RX_CTL_AP | AX_RX_CTL_AMALL | AX_RX_CTL_AB;
+       ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+       return 0;
+}
+
 const struct driver_info ax88179_info = {
 	.bind = ax88179_bind,
 	.unbind = ax88179_unbind,
@@ -1179,6 +1231,8 @@ const struct driver_info ax88179_info = {
 	.tx_fixup = ax88179_tx_fixup,
 	.system_suspend = ax88179_system_suspend,
 	.system_resume = ax88179_system_resume,
+	.runtime_suspend = ax88179_runtime_suspend,
+    .runtime_resume = ax88179_runtime_resume,
 	.napi_weight = AX88179_NAPI_WEIGHT,
 	.buf_rx_size = AX88179_BUF_RX_SIZE,
 };

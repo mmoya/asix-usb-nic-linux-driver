@@ -76,7 +76,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 				"ASIX AX88279 USB Ethernet Controller"
 #endif
 
-#define DRIVER_VERSION		"3.0.0"
+#define DRIVER_VERSION		"3.1.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC		"ASIX USB Ethernet Controller"
 #define MODULENAME		"ax_usb_nic"
@@ -105,7 +105,11 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 #define AX_TX_TIMEOUT		(5 * HZ)
 #define AX_MCAST_FILTER_SIZE	8
 #define AX_MAX_MCAST		64
+#ifdef ENABLE_QUEUE_PRIORITY
+#define AX_TX_QUEUE_SIZE	2
+#else
 #define AX_TX_QUEUE_SIZE	1
+#endif
 
 #define US_TO_NS		1000
 
@@ -120,6 +124,9 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 	#define AX_FW_MODE_179A			0x0001
 	#define AX_USB_EP5_EN			0x0001
 #ifdef ENABLE_AX88279
+#ifdef ENABLE_PTP_FUNC
+	#define AX_USB_EP4_EN			0x0002
+#endif
 #endif
 #define AX_WRITE_EFUSE_EN		0x09
 #define AX_WRITE_EFUSE_DIS		0x0A
@@ -480,18 +487,26 @@ struct ax_device {
 	u8 int_link_info;
 	u8 int_link_chg;
 
+#ifdef ENABLE_PTP_FUNC
+	struct ax_ptp_cfg *ptp_cfg;
+	struct sk_buff_head tx_timestamp;
+#endif
+#ifdef ENABLE_MACSEC_FUNC
+	struct ax_macsec_cfg *macsec_cfg;
+#endif
 	u64 bulkin_complete;
 	u64 bulkin_error;
 	u64 bulkout_complete;
 	u64 bulkout_error;
 	u64 bulkint_complete;
 	u64 bulkint_error;
+#ifdef ENABLE_QUEUE_PRIORITY
+	u64 ep5_count;
+	u64 ep3_count;
+#endif
 #define CHIP_40PIN	0x03
 #define CHIP_32PIN	0x02
 	u8 chip_pin;
-#ifdef ENABLE_DWC3_ENHANCE
-	u8 intr_not_first_link_up;
-#endif
 #ifdef ENABLE_INT_POLLING
 #define INT_POLLING_TIMER	128	/* in milliseconds */
 	struct delayed_work int_polling_work;
@@ -504,6 +519,9 @@ struct driver_info {
 	void	(*unbind)(struct ax_device *axdev);
 	int	(*hw_init)(struct ax_device *axdev);
 	int	(*stop)(struct ax_device *axdev);
+#ifdef ENABLE_QUEUE_PRIORITY
+	int	(*queue_priority)(struct ax_device *axdev);
+#endif
 	void	(*rx_fixup)(struct ax_device *axdev, struct rx_desc *desc,
 			    int *work_done, int budget);
 	int	(*tx_fixup)(struct ax_device *axdev, struct tx_desc *desc);
@@ -513,6 +531,12 @@ struct driver_info {
 	int	(*system_resume)(struct ax_device *axdev);
 	int	(*runtime_suspend)(struct ax_device *axdev);
 	int	(*runtime_resume)(struct ax_device *axdev);
+
+#ifdef ENABLE_PTP_FUNC
+	int (*ptp_pps_ctrl)(struct ax_device *axdev, u8 enable);
+	int	(*ptp_init)(struct ax_device *axdev);
+	void	(*ptp_remove)(struct ax_device *axdev);
+#endif
 
 	unsigned long napi_weight;
 	size_t	buf_rx_size;

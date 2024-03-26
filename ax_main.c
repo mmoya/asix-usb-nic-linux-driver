@@ -17,6 +17,12 @@
 #include "ax_main.h"
 #include "ax88179_178a.h"
 #include "ax88179a_772d.h"
+#ifdef ENABLE_PTP_FUNC
+#include "ax_ptp.h"
+#endif
+#ifdef ENABLE_MACSEC_FUNC
+#include "ax_macsec.h"
+#endif
 
 #ifdef ENABLE_AUTODETACH_FUNC
 static int autodetach = -1;
@@ -48,6 +54,7 @@ static int
 ax_submit_rx(struct ax_device *netdev, struct rx_desc *desc, gfp_t mem_flags);
 static void ax_set_carrier(struct ax_device *axdev);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 void ax_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info)
 {
 	struct ax_device *axdev = netdev_priv(net);
@@ -60,6 +67,32 @@ void ax_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info)
 		axdev->fw_version[0], axdev->fw_version[1],
 		axdev->fw_version[2], axdev->fw_version[3]);
 }
+#else
+static size_t ax_strscpy(char *dest, const char *src, size_t size)
+{
+	size_t len = strnlen(src, size) + 1;
+	if(len > size) {
+		if (size)
+			dest[0] = '\0';
+		return 0;
+	}
+	memcpy(dest, src, len);
+	return len;
+}
+
+void ax_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info)
+{
+	struct ax_device *axdev = netdev_priv(net);
+
+	ax_strscpy(info->driver, MODULENAME, sizeof(info->driver));
+	ax_strscpy(info->version, DRIVER_VERSION, sizeof(info->version));
+	usb_make_path(axdev->udev, info->bus_info, sizeof(info->bus_info));
+
+	sprintf(info->fw_version, "v%d.%d.%d.%d",
+		axdev->fw_version[0], axdev->fw_version[1],
+		axdev->fw_version[2], axdev->fw_version[3]);
+}	
+#endif
 
 #if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
 int ax_get_settings(struct net_device *netdev, struct ethtool_cmd *cmd)
@@ -253,13 +286,56 @@ static const char ax_gstrings[][ETH_GSTRING_LEN] = {
 	"bulkout_error",
 	"bulkint_complete",
 	"bulkint_error",
+#ifdef ENABLE_QUEUE_PRIORITY
+	"ep5_count",
+	"ep3_count",
+#endif
+#ifdef ENABLE_MACSEC_FUNC
+	"macsec_rx_in_pkts",
+	"macsec_rx_out_pkts",
+	"macsec_rx_ain_dec_pkts",
+	"macsec_rx_ain_byp_pkts",
+	"macsec_rx_ain_drp_pkts",
+	"macsec_rx_icv_fail_pkts",
+	"macsec_rx_icv_pass_pkts",
+	"macsec_rx_ctl",
+	"macsec_rx_untag",
+	"macsec_rx_sc",
+	"macsec_rx_nosc",
+	"macsec_rx_sc_null",
+	"macsec_rx_sc_untag",
+	"macsec_rx_sc_invalid_tag",
+	"macsec_rx_sc_nosc",
+	"macsec_rx_sc_dis",
+	"macsec_rx_sc_dec",
+	"macsec_tx_in_pkts",
+	"macsec_tx_out_pkts",
+	"macsec_tx_untag_pkts",
+	"macsec_tx_too_long_pkts",
+	"macsec_tx_enc_pkts",
+	"macsec_tx_byp_pkts",
+	"macsec_tx_drp_pkts",
+	"macsec_tx_ctl",
+	"macsec_tx_sc",
+	"macsec_tx_nosc",
+#endif
 };
 
 int ax_get_sset_count(struct net_device *netdev, int sset)
 {
+#ifdef ENABLE_MACSEC_FUNC
+	struct ax_device *axdev = netdev_priv(netdev);
+#endif
 	switch (sset) {
 	case ETH_SS_STATS:
+#ifdef ENABLE_MACSEC_FUNC
+		if (axdev->chip_version >= AX_VERSION_AX88279)
+			return ARRAY_SIZE(ax_gstrings);
+		else
+			return ARRAY_SIZE(ax_gstrings) - 27;
+#else
 		return ARRAY_SIZE(ax_gstrings);
+#endif
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -267,6 +343,7 @@ int ax_get_sset_count(struct net_device *netdev, int sset)
 
 void ax_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
 {
+
 	switch (stringset) {
 	case ETH_SS_STATS:
 		memcpy(data, ax_gstrings, sizeof(ax_gstrings));
@@ -295,7 +372,26 @@ void ax_get_ethtool_stats(struct net_device *netdev,
 	*temp++ = axdev->bulkout_error;
 	*temp++ = axdev->bulkint_complete;
 	*temp++ = axdev->bulkint_error;
+#ifdef ENABLE_QUEUE_PRIORITY
+	*temp++ = axdev->ep5_count;
+	*temp++ = axdev->ep3_count;
+#endif
 #ifdef ENABLE_AX88279
+#ifdef ENABLE_MACSEC_FUNC
+	if (axdev->chip_version >= AX_VERSION_AX88279) {
+		u32 *macsec_dbg_count;
+		int i;
+
+		ax_get_rx_dbg_count(axdev);
+		ax_get_tx_dbg_count(axdev);
+		macsec_dbg_count = (u32 *)&axdev->macsec_cfg->rx_dbg_count;
+		for (i = 0; i < (AX_MACSEC_RX_DBG_CNT_SIZE / sizeof(u32)); i++)
+			*temp++ = macsec_dbg_count[i];
+		macsec_dbg_count = (u32 *)&axdev->macsec_cfg->tx_dbg_count;
+		for (i = 0; i < (AX_MACSEC_TX_DBG_CNT_SIZE / sizeof(u32)); i++)
+			*temp++ = macsec_dbg_count[i];
+	}
+#endif
 #endif
 }
 
@@ -853,6 +949,10 @@ void ax_write_bulk_callback(struct urb *urb)
 	if (!axdev)
 		return;
 
+#ifdef ENABLE_PTP_FUNC
+	if (test_and_clear_bit(AX_TX_TIMESTAMPS, &desc->flags))
+		ax_ptp_ts_read_cmd_async(axdev);
+#endif
 	netdev = axdev->netdev;
 	stats = ax_get_stats(netdev);
 
@@ -941,7 +1041,7 @@ static void ax_intr_callback(struct urb *urb)
 
 	event = urb->transfer_buffer;
 	le64_to_cpus((u64 *)event);
-#ifndef ENABLE_DWC3_ENHANCE
+
 #ifndef ENABLE_INT_POLLING
 	axdev->link = event->link & AX_INT_PPLS_LINK;
 
@@ -959,23 +1059,7 @@ static void ax_intr_callback(struct urb *urb)
 		}
 	}
 #endif
-#else
-	if (event->link & AX_INT_PPLS_LINK) {
-		if (!axdev->intr_not_first_link_up) {
-			axdev->int_link_info = event->link_info_u8;
-			axdev->intr_not_first_link_up = 1;
-		} else if (axdev->int_link_info != event->link_info_u8) {
-			axdev->int_link_chg = 1;
-			set_bit(AX_EN_RX, &axdev->flags);
-			schedule_delayed_work(&axdev->schedule, 0);
 
-		}
-	} else {
-		axdev->intr_not_first_link_up = 0;
-		axdev->int_link_info = 0;
-		axdev->int_link_chg = 0;
-	}
-#endif
 resubmit:
 	res = usb_submit_urb(urb, GFP_ATOMIC);
 	if (res == -ENODEV) {
@@ -986,13 +1070,16 @@ resubmit:
 			  "can't resubmit intr, status %d\n", res);
 	}
 }
+
 #ifdef ENABLE_INT_POLLING
 static void __int_polling_work(struct work_struct *work)
 {
 	struct ax_device *axdev = container_of(work,
 				     struct ax_device, int_polling_work.work);
+	struct ax_link_info *link_info = &axdev->link_info;
 	u16 bmsr;
-
+	u16 speed;
+	
 	if (test_bit(AX_UNPLUG, &axdev->flags) ||
 	    !test_bit(AX_ENABLE, &axdev->flags))
 		return;
@@ -1004,13 +1091,32 @@ static void __int_polling_work(struct work_struct *work)
 
 	bmsr = ax_mdio_read(axdev->netdev, axdev->mii.phy_id, MII_BMSR);
 	axdev->link = bmsr & BMSR_LSTATUS;
+	
 	if (axdev->link) {
-		if (!netif_carrier_ok(axdev->netdev))
+		if (!netif_carrier_ok(axdev->netdev)) {
 			ax_set_carrier(axdev);
+			switch (link_info->eth_speed) {
+			case ETHER_LINK_10:
+				speed = 10;
+				break;
+			case ETHER_LINK_100:
+				speed = 100;
+				break;
+			case ETHER_LINK_1000:
+				speed = 1000;
+				break;
+			case ETHER_LINK_2500:
+				speed = 2500;
+				break;
+			}
+			netdev_info(axdev->netdev, "link up, %uMbps, %s-duplex\n",
+			    speed, link_info->full_duplex ? "full" : "half");
+		}
 	} else {
 		if (netif_carrier_ok(axdev->netdev)) {
 			netif_stop_queue(axdev->netdev);
 			ax_set_carrier(axdev);
+			netdev_info(axdev->netdev, "link down\n");
 		}
 	}
 
@@ -1185,7 +1291,11 @@ static void ax_tx_bottom(struct ax_device *axdev)
 		desc = ax_get_tx_desc(axdev);
 		if (!desc)
 			break;
+#ifdef ENABLE_QUEUE_PRIORITY
+		desc->q_index = index;
+#else
 		desc->q_index = 0;
+#endif
 		ret = info->tx_fixup(axdev, desc);
 		if (ret) {
 			struct net_device *netdev = axdev->netdev;
@@ -1438,17 +1548,42 @@ static void ax_tx_timeout(struct net_device *netdev)
 	struct ax_device *axdev = netdev_priv(netdev);
 
 	netif_warn(axdev, tx_err, netdev, "Tx timeout\n");
-#ifndef ENABLE_DWC3_ENHANCE
+
 	usb_queue_reset_device(axdev->intf);
-#endif
+
 }
 
+#ifdef ENABLE_QUEUE_PRIORITY
+static u16 ax_select_queue(struct net_device *netdev, struct sk_buff *skb,
+			   struct net_device *sb_dev)
+{
+	struct ax_device *axdev = netdev_priv(netdev);
+	struct ax_link_info *link_info = &axdev->link_info;
+
+	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
+#ifdef ENABLE_AX88279
+		if (axdev->chip_version >= AX_VERSION_AX88279)
+			return 1;
+#endif
+		if (link_info->eth_speed == ETHER_LINK_1000)
+			return 1;
+	}
+	return 0;
+}
+#endif
 
 static netdev_tx_t ax_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
+#ifdef ENABLE_QUEUE_PRIORITY
+	u32 index = ax_select_queue(netdev, skb, NULL);
+#endif
 	skb_tx_timestamp(skb);
+#ifdef ENABLE_QUEUE_PRIORITY
+	skb_queue_tail(&axdev->tx_queue[index], skb);
+#else
 	skb_queue_tail(&axdev->tx_queue[0], skb);
+#endif
 	if (!list_empty(&axdev->tx_free)) {
 		if (test_bit(AX_SELECTIVE_SUSPEND, &axdev->flags)) {
 #ifdef ENABLE_TX_TASKLET
@@ -1589,6 +1724,9 @@ static void ax_set_carrier(struct ax_device *axdev)
 #endif
 
 	if (axdev->link) {
+#ifdef ENABLE_PTP_FUNC
+		axdev->driver_info->ptp_pps_ctrl(axdev, 1);
+#endif
 		if (!netif_carrier_ok(netdev)) {
 			if (axdev->driver_info->link_reset(axdev))
 				return;
@@ -1611,6 +1749,9 @@ static void ax_set_carrier(struct ax_device *axdev)
 			netif_wake_queue(netdev);
 		}
 	} else {
+#ifdef ENABLE_PTP_FUNC
+		axdev->driver_info->ptp_pps_ctrl(axdev, 0);
+#endif
 		if (netif_carrier_ok(netdev)) {
 			netif_carrier_off(netdev);
 #ifdef ENABLE_TX_TASKLET
@@ -1636,15 +1777,7 @@ static void ax_set_carrier(struct ax_device *axdev)
 	if (axdev->intr_link_info.eth_speed == ETHER_LINK_2500) {
 		netdev_info(axdev->netdev,
 			    "link up, 2500Mbps, full-duplex\n");
-	} else {
-		if (!test_bit(AX_SELECTIVE_SUSPEND, &axdev->flags))
-			mii_check_media(&axdev->mii, 1, 1);
 	}
-#else
-#ifndef ENABLE_DWC3_ENHANCE
-	if (!test_bit(AX_SELECTIVE_SUSPEND, &axdev->flags))
-		mii_check_media(&axdev->mii, 1, 1);
-#endif
 #endif
 }
 
@@ -1666,19 +1799,7 @@ static inline void __ax_work_func(struct ax_device *axdev)
 
 	if (test_and_clear_bit(AX_LINK_CHG, &axdev->flags))
 		ax_set_carrier(axdev);
-#ifdef ENABLE_DWC3_ENHANCE
-	if (test_and_clear_bit(AX_EN_RX, &axdev->flags)) {
-		u16 medium_mode;
 
-		ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
-					2, 2, &medium_mode, 1);
-		if (!(medium_mode & AX_MEDIUM_RECEIVE_EN) ||
-			axdev->int_link_chg == 1) {
-			axdev->driver_info->link_reset(axdev);
-			axdev->int_link_chg = 0;
-		}
-	}
-#endif
 #ifdef ENABLE_RX_TASKLET
 	if (test_and_clear_bit(AX_SCHEDULE_TASKLET_RX, &axdev->flags) &&
 	    netif_carrier_ok(axdev->netdev))
@@ -1841,7 +1962,7 @@ static int ax88179_change_mtu(struct net_device *net, int new_mtu)
 	struct ax_device *axdev = netdev_priv(net);
 	u16 reg16;
 
-	if (new_mtu <= 0 || new_mtu > 4088)
+	if (new_mtu <= 0 || new_mtu > net->max_mtu)
 		return -EINVAL;
 
 	net->mtu = new_mtu;
@@ -1908,7 +2029,19 @@ int ax_check_ether_addr(struct ax_device *axdev)
 	    !is_valid_ether_addr(addr) ||
 	    !memcmp(axdev->netdev->dev_addr, default_mac, ETH_ALEN) ||
 	    !memcmp(axdev->netdev->dev_addr, default_mac_178a, ETH_ALEN)) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
 		eth_random_addr(addr);
+#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 4, 0)
+	eth_hw_addr_random(axdev->netdev);
+#else
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)
+	axdev->netdev->addr_assign_type |= NET_ADDR_RANDOM;
+#endif
+random_ether_addr(axdev->netdev->dev_addr);
+#endif		
+#endif
+
 		addr[0] = 0;
 		addr[1] = 0x0E;
 		addr[2] = 0xC6;
@@ -2066,9 +2199,9 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	tasklet_disable(&axdev->rx_tl);
 #else
 #if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
-	netif_napi_add_weight(netdev, &axdev->napi, ax_poll, info->napi_weight);
+	netif_napi_add_weight(netdev, &axdev->napi, ax_poll, AX88179_NAPI_WEIGHT);
 #else
-	netif_napi_add(netdev, &axdev->napi, ax_poll, info->napi_weight);
+	netif_napi_add(netdev, &axdev->napi, ax_poll, AX88179_NAPI_WEIGHT);
 #endif
 #endif
 	ret = ax_get_mac_address(axdev);

@@ -106,6 +106,16 @@ Note: The default way to find the interface is to scan the ASIX device using
 	...
 Adjust the contents of #define NET_INTERFACE to select the method you want.
 
+================
+Enable PTP(Precision Time Protocol)
+================
+1. If you want to enable the PTP function, please modify ENABLE_PTP_FUNC to 'y' in the makefile, 
+	and then recompile it.
+	
+	ENABLE_PTP_FUNC = n
+	->
+	ENABLE_PTP_FUNC = y
+
 === AX88179/178A EEPROM/eFuse Programmer
 1. If you want to read out values of the EEPROM/EFUSE to a file, go to the 
 driver directory and execute the following command:
@@ -193,3 +203,53 @@ and so, go to the driver directory and execute the following command:
 				RP: Random Pattern
 				FF: Fixed Pattern(FF)
 				MDI: MDI
+
+=== AX88279 Linux Flash Programming Tool
+1. If you want to get help message for specific command, go to the driver 
+directory and execute the following command:
+	$sudo ./ax88279_programmer help [command]
+
+2. If you want to get the version of firmware, go to the driver directory 
+and execute the following command:
+	$sudo ./ax88279_programmer rversion
+
+3. If you want to get the MAC address, go to the driver directory and execute 
+the following command:
+	$sudo ./ax88279_programmer rmacaddr
+
+4. If you want to write values of a file to the flash, go to the driver 
+directory and execute the following command:
+	$sudo ./ax88279_programmer wflash [file]
+
+5. If you want to write the parameter in flash, go to the driver directory and execute 
+the following command:
+	$sudo ./ax88279_programmer wpara -m [MAC] -s [SN] -p [PID] -v [VID] -P [PS] -M [MN] -D [dump]
+	-S [SS] -H [HS] -w [wol] -l [led0 value] -e [led1 value] -d [led2 value]
+       -m [MAC]   	 - MAC address (XX:XX:XX:XX:XX:XX) X:'0'-'F'
+       -s [SN]    	 - Serial Number (Characters must be less than 19 bytes) X:'0'-'F'
+       -p [PID]   	 - Product ID (XX:XX) X:'0'-'F'
+       -v [VID]   	 - Vendor ID (XX:XX) X:'0'-'F'
+       -P [PS]    	 - Product String (Characters must be less than 19 bytes)
+       -M [MN]    	 - Manufacture Name (Characters must be less than 19 bytes)
+       -D [dump]	 - The parameter content currently in flash (dump)
+       -S [SS]    	 - SS bus power (XX) X:0-896
+       -H [HS]    	 - HS bus power (XX) X:0-500
+       -w [wol]    	 - wake on LAN (XXXXXXXX) X:digit
+       -l [led0 value]	 - value: control_blink (XXXX_XXXX)
+       -e [led1 value]	 - value: control_blink (XXXX_XXXX)
+	example: 
+		$sudo ./ax88279_programmer wpara -m 00:0e:c6:81:79:01 -s 00000000000001
+
+		$sudo ./ax88279_programmer wpara -p 17:90 -v 0b:95 -P ax88279 -M asix
+
+		$sudo ./ax88279_programmer wpara -S 400 -H 200 -w 21426543
+
+		$sudo ./ax88279_programmer wpara -l C113_0004 -e C002_0C4F
+
+6. If you want to view the current parameter content in flash, go to the driver directory and execute 
+the following command, and you can see the file parameter.txt in driver directory:
+	$sudo ./ax88279_programmer wpara -D dump
+
+7. If you want to reload the flash to check version or MAC address 
+and so, go to the driver directory and execute the following command:
+	$sudo ./ax88279_programmer reload

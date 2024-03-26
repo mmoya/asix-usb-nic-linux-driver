@@ -5,11 +5,14 @@ PWD	= $(shell pwd)
 ENABLE_IOCTL_DEBUG = n
 ENABLE_AUTODETACH_FUNC = n
 ENABLE_MAC_PASS = n
-ENABLE_DWC3_ENHANCE = n
+ENABLE_INT_AGGRESSIVE = y
 ENABLE_INT_POLLING = n
 ENABLE_AUTOSUSPEND = n
 ENABLE_TX_TASKLET = n
 ENABLE_RX_TASKLET = n
+ENABLE_PTP_FUNC = n
+ENABLE_PTP_DEBUG = n
+ENABLE_QUEUE_PRIORITY = n
 
 obj-m := $(TARGET).o
 $(TARGET)-objs := ax_main.o ax88179_178a.o ax88179a_772d.o
@@ -29,11 +32,12 @@ ifeq ($(ENABLE_MAC_PASS), y)
 	EXTRA_CFLAGS += -DENABLE_MAC_PASS
 endif
 
-ifeq ($(ENABLE_DWC3_ENHANCE), y)
-	EXTRA_CFLAGS += -DENABLE_DWC3_ENHANCE
-ifeq ($(ENABLE_INT_POLLING), n)
-	EXTRA_CFLAGS += -DENABLE_INT_POLLING
+ifeq ($(ENABLE_INT_AGGRESSIVE), y)
+	EXTRA_CFLAGS += -DENABLE_INT_AGGRESSIVE
 endif
+
+ifeq ($(ENABLE_INT_POLLING), y)
+	EXTRA_CFLAGS += -DENABLE_INT_POLLING
 endif
 
 ifeq ($(ENABLE_AUTOSUSPEND), y)
@@ -47,7 +51,25 @@ ifeq ($(ENABLE_RX_TASKLET), y)
 	EXTRA_CFLAGS += -DENABLE_RX_TASKLET
 endif
 
-EXTRA_CFLAGS += -DENABLE_AX88279
+ifeq ($(ENABLE_PTP_FUNC), y)
+	$(TARGET)-objs += ax_ptp.o
+	EXTRA_CFLAGS += -DENABLE_PTP_FUNC
+ifeq ($(ENABLE_PTP_DEBUG), y)
+	EXTRA_CFLAGS += -DENABLE_PTP_DEBUG
+endif
+endif
+
+ifeq ($(ENABLE_QUEUE_PRIORITY), y)
+	EXTRA_CFLAGS += -DENABLE_QUEUE_PRIORITY
+endif
+
+	EXTRA_CFLAGS += -DENABLE_AX88279
+ifeq ($(ENABLE_MACSEC_FUNC), y)
+	$(TARGET)-objs += ax_macsec.o
+	EXTRA_CFLAGS += -DENABLE_MACSEC_FUNC
+endif
+	EXTRA_CFLAGS += -DENABLE_AX88279_MINIP_2_5G
+
 
 ifneq (,$(filter $(SUBLEVEL),14 15 16 17 18 19 20 21))
 MDIR	= kernel/drivers/usb/net
@@ -58,8 +80,9 @@ endif
 all:
 	make -C $(KDIR) M=$(PWD) modules
 	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179_programmer.c -o ax88179_programmer
-	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_programmer.c -o ax88179b_179a_772e_772d_programmer
-	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_ieee.c -o ax88179b_179a_772e_772d_ieee
+	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_programmer.c -o ax88179b_179a_772d_programmer
+	$(CC) $(TOOL_EXTRA_CFLAGS) ax88279_programmer.c -o ax88279_programmer
+	$(CC) $(TOOL_EXTRA_CFLAGS) ax88179a_ieee.c -o ax88179b_179a_772d_ieee
 	$(CC) $(TOOL_EXTRA_CFLAGS) axcmd.c -o axcmd
 
 install:

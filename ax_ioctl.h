@@ -53,6 +53,7 @@
 #define AX88179A_DUMP_EFUSE		9
 #define AX88179A_IEEE_TEST		10
 #define AX88179A_AUTOSUSPEND_EN		11
+#define AX88179A_ERASE_SECTOR_FLASH	12
 
 #define IEEE_1000M1			0
 #define IEEE_1000M2			1
@@ -73,11 +74,46 @@
 #define ERR_EFUSE_WRITE			7
 #define ERR_IEEE_INVALID_CHIP		8
 #define ERR_BOOT_CODE			9
+#define ERR_FALSH_ERASE_SECTOR	10
 
 #define USB_READ_OPS			0
 #define USB_WRITE_OPS			1
 
 #define SCAN_DEV_MAX_RETRY		10
+
+#define FLASH_BLOCK_SIZE	20 //bytes
+#define WRITE_PARA_HEADER 0x2100
+#define FLASH_SIZE (16*1024*1024)
+#define FLASH_PARA_OFFSET 8448
+
+#define PRAM_PRI_FW1_OFFSET 0x0
+#define PRAM_PRI_FW1_LENGTH 0x4
+#define MD32_PRI_FW1_OFFSET 0x14
+#define MD32_PRI_FW1_LENGTH 0x18
+
+#define PRAM_SEC_FW1_OFFSET 0x28
+#define PRAM_SEC_FW1_LENGTH 0x2C
+#define MD32_SEC_FW1_OFFSET 0x3C
+#define MD32_SEC_FW1_LENGTH 0x40
+
+#define PRAM_PRI_FW2_OFFSET 0x1000
+#define PRAM_PRI_FW2_LENGTH 0x1004
+#define MD32_PRI_FW2_OFFSET 0x1014
+#define MD32_PRI_FW2_LENGTH 0x1018
+
+#define PRAM_SEC_FW2_OFFSET 0x1028
+#define PRAM_SEC_FW2_LENGTH 0x102C
+#define MD32_SEC_FW2_OFFSET 0x103C
+#define MD32_SEC_FW2_LENGTH 0x1040
+
+#define PARAMETER_PRI_HEADER_OFFSET 0x2000
+#define PARAMETER_SEC_HEADER_OFFSET 0x200C
+
+#define PARAMETER_PRI_OFFSET 0x2004
+#define PARAMETER_PRI_BLOCK_COUNT 0x2008
+#define PARAMETER_SEC_OFFSET 0x2010
+#define PARAMETER_SEC_BLOCK_COUNT 0x2014
+
 
 enum _exit_code {
 	SUCCESS			= 0,
@@ -146,6 +182,9 @@ struct _ax_ioctl_command {
 			 ((val >>  8) & 0x0000FF00) | \
 			 ((val <<  8) & 0x00FF0000) | \
 			 ((val << 24) & 0xFF000000))
+#define SWAP_16(val)    ((val >> 8) & 0x00FF) | \
+                         ((val <<  8) & 0xFF00)
+
 struct ax_device;
 typedef int (*IOCTRL_TABLE)(struct ax_device *axdev,
 			    struct _ax_ioctl_command *info);

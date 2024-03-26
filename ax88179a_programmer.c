@@ -920,13 +920,14 @@ static int check_efuse_block_valid(unsigned char *data)
 {
 	unsigned int sum = 0;
 	unsigned int tmp;
+	int j = 0;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	if ((data[0] & 0xF) == EF_TYPE_REV)
 		return -FAIL_IVALID_VALUE;
 
-	for (int j = 0; j < 4; j++) {
+	for (j = 0; j < 4; j++) {
 		if (j == 0)
 			sum += data[j] & 0xF;
 		else

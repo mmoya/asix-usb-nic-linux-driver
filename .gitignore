@@ -1,0 +1,21 @@
+# Ignore all
+*
+
+# Unignore all with extensions
+!*.*
+
+# Unignore all dirs
+!*/
+
+**.cmd
+**.o
+**.ko
+**.o.d
+**.mod
+**.mod.c
+.cache/**
+compile_commands.json
+
+Module.symvers
+modules.order
+**_programmer

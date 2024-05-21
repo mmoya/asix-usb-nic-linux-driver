@@ -92,7 +92,11 @@ exit:
 }
 
 static int ax88179a_ethtool_get_eee(struct ax_device *axdev,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+				    struct ethtool_keee *data)
+#else
 				    struct ethtool_eee *data)
+#endif
 {
 	int val;
 
@@ -100,22 +104,50 @@ static int ax88179a_ethtool_get_eee(struct ax_device *axdev,
 	if (val < 0)
 		return val;
 	val &= ~MDIO_EEE_100TX;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	linkmode_mod_bit(SUPPORTED_100baseT_Full,
+		         data->supported, val & MDIO_EEE_100TX);
+	linkmode_mod_bit(SUPPORTED_1000baseT_Full,
+		         data->supported, val & MDIO_EEE_1000T);
+	linkmode_mod_bit(SUPPORTED_10000baseT_Full,
+		         data->supported, val & MDIO_EEE_10GT);
+	linkmode_mod_bit(SUPPORTED_1000baseKX_Full,
+		         data->supported, val & MDIO_EEE_1000KX);
+	linkmode_mod_bit(SUPPORTED_10000baseKX4_Full,
+		         data->supported, val & MDIO_EEE_10GKX4);
+	linkmode_mod_bit(SUPPORTED_10000baseKR_Full,
+		         data->supported, val & MDIO_EEE_10GKR);
+#else
 	data->supported = mmd_eee_cap_to_ethtool_sup_t(val);
+#endif
 
 	val = ax_mmd_read(axdev->netdev, MDIO_MMD_AN, MDIO_AN_EEE_ADV);
 	if (val < 0)
 		return val;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	mii_eee_cap1_mod_linkmode_t(data->advertised, val);
+#else
 	data->advertised = mmd_eee_adv_to_ethtool_adv_t(val);
+#endif
 
 	val = ax_mmd_read(axdev->netdev, MDIO_MMD_AN, MDIO_AN_EEE_LPABLE);
 	if (val < 0)
 		return val;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	mii_eee_cap1_mod_linkmode_t(data->lp_advertised, val);
+#else
 	data->lp_advertised = mmd_eee_adv_to_ethtool_adv_t(val);
+#endif
 
 	return 0;
 }
 
-static int ax88179a_get_eee(struct net_device *net, struct ethtool_eee *edata)
+static int ax88179a_get_eee(struct net_device *net,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+			    struct ethtool_keee *edata)
+#else
+			    struct ethtool_eee *edata)
+#endif
 {
 	struct ax_device *axdev = netdev_priv(net);
 
@@ -131,11 +163,20 @@ static void ax88179a_eee_setting(struct ax_device *axdev, bool enable)
 		     enable, 0, NULL);
 }
 
-static int ax88179a_set_eee(struct net_device *net, struct ethtool_eee *edata)
+static int ax88179a_set_eee(struct net_device *net,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+			    struct ethtool_keee *edata)
+#else
+			    struct ethtool_eee *edata)
+#endif
 {
 	struct ax_device *axdev = netdev_priv(net);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+	if (linkmode_test_bit(MDIO_EEE_100TX, edata->advertised))
+#else
 	if (edata->advertised & MDIO_EEE_100TX)
+#endif
 		return -EOPNOTSUPP;
 
 	axdev->eee_enabled = edata->eee_enabled;

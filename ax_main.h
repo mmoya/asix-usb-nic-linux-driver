@@ -33,6 +33,9 @@
 #include <linux/efi.h>
 #include <linux/crc32.h>
 #include <linux/time.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 9, 0)
+#include <linux/linkmode.h>
+#endif
 #include "ax_ioctl.h"
 
 #define napi_alloc_skb(napi, length) netdev_alloc_skb_ip_align(netdev, length)

@@ -937,34 +937,34 @@ static int change_para_wol(unsigned char *rpara_databuf, int block_index, char *
 
 	for (i = 0; i < 8; i++) {
 		unsigned char bit_value = 0;
-		bit_value = wol[i] & 1;
+		bit_value = (wol[i]-'0');
 
-		if (i == 0 && bit_value == 1) {
+		if (i == 0 && bit_value == 1) { // Disable Remote Wakeup
 			dwolEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1] &= ~0x01;
 			break; 
 		}
-		if (i == 1 && bit_value == 1) {
+		if (i == 1 && bit_value == 1) { // PME Enable
 			pmeEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x10;
 		}
-		if (i == 2 && bit_value == 1) {
+		if (i == 2 && bit_value == 1) { // DWOL Magic Packet
 			dwolEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1] |= 0x02;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x1C;
 		}
-		if (i == 3 && bit_value == 1) {
+		if (i == 3 && bit_value == 1) { // DWOL Link Change
 			dwolEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1] |= 0x02;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x1A;
 		}
-		if (i == 4 && bit_value == 1) {
+		if (i == 4 && bit_value == 1) { // S5 WOL Magic Packet
 			s5wolEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1] |= 0x02;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x18;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4] |= 0x28;
 		}
-		if (i == 5 && bit_value == 1) {
+		if (i == 5 && bit_value == 1) { // S5 WOL Link Change
 			s5wolEn = 1;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1] |= 0x02;
 			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x18;
@@ -972,10 +972,10 @@ static int change_para_wol(unsigned char *rpara_databuf, int block_index, char *
 		}
 
 		if (dwolEn || s5wolEn || pmeEn) {
-			if (i == 6 && bit_value == 1) {
+			if (i == 6 && bit_value == 1) { // PME Retry Enable
 				rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x80;
 			}
-			if (i == 7 && bit_value == 1) {
+			if (i == 7 && bit_value == 1) { // PME IND Enable
 				rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x40;
 			}
 
@@ -1524,23 +1524,64 @@ static int writeparameter_func(struct ax_command_info *info)
 	}
 
 	if (argument.wol) {
-		if (para_size)
+
+		int valid = 1;
+
+		if (para_size) {
 			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_15);
+			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type15, 20);
+		}
 		if (block_index == -FAIL_GENERIAL_ERROR) {
 			block_index = para_size / 20;
 			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type15, 20);
 			para_size += 20;
 		}
 
-		if (strlen(argument.wol) > 8)	{
+		if (strlen(argument.wol) != 8)	{
 			printf("FAIL: The value must be 8 digit\n");
 			return -FAIL_INVALID_PARAMETER;
+		}
+
+		int time = 0;
+		for(time = 0; time < 8; time++) {
+			if (argument.wol[time] != '0' && argument.wol[time] != '1') {
+				printf("FAIL: The value must be 1 or 0\n");
+				return -FAIL_INVALID_PARAMETER;
+			}
+		}
+
+		int count = 0;
+		for(time = 0; time < 8; time++) {
+			if (argument.wol[time] == '1')
+				count++;
+		}
+
+		if (count >= 1 && count != 8)
+			valid = 1;
+		else
+			valid = 0;
+
+		if (argument.wol[0] == '1') {
+			for(time = 1; time < 8; time++) {
+				if (argument.wol[time] == '1')
+					valid = 0;
+			}
+		} else if (argument.wol[0] == '0' && argument.wol[1] == '0') {
+			for(time = 2; time < 8; time++) {
+				if (argument.wol[time] == '1')
+					valid = 0;
+			}
+		}
+
+		if(!valid) {
+				printf("FAIL: The value is invalid\n");
+				return -FAIL_INVALID_PARAMETER;
 		}
 
 		ret = change_para_wol(&rpara_buf[para_offset], block_index, argument.wol);
 		if (ret < 0) {
 			fprintf(stderr,
-				"%s: Changing HS_MAX_BUS_PW failed.\n",
+				"%s: Changing Wake on LAN failed.\n",
 				__func__);
 			goto fail;
 		}

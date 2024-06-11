@@ -156,7 +156,7 @@ int ax_get_link_ksettings(struct net_device *netdev,
 	mii_ethtool_get_link_ksettings(&axdev->mii, cmd);
 
 #ifdef ENABLE_AX88279
-	printk("============AX88279==========");
+	//printk("============AX88279==========");
 	if (axdev->chip_version == AX_VERSION_AX88279) {
 #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
@@ -2019,9 +2019,18 @@ int ax_get_mac_pass(struct ax_device *axdev, u8 *mac)
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+int ax_check_ether_addr(struct ax_device *axdev, struct sockaddr *p)
+#else
 int ax_check_ether_addr(struct ax_device *axdev)
+#endif
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+	u8 *addr = p->sa_data;
+#else
 	u8 *addr = (u8 *)axdev->netdev->dev_addr;
+#endif
+	
 	u8 default_mac[6] = {0, 0x0e, 0xc6, 0x81, 0x79, 0x01};
 	u8 default_mac_178a[6] = {0, 0x0e, 0xc6, 0x81, 0x78, 0x01};
 
@@ -2094,20 +2103,31 @@ static int ax_get_chip_feature(struct ax_device *axdev)
 static int ax_get_mac_address(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
+	struct sockaddr addr;
 
 	if (ax_read_cmd(axdev, AX_ACCESS_MAC, AX_NODE_ID, ETH_ALEN,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+			ETH_ALEN, addr.sa_data, 0) < 0) {
+#else
 			ETH_ALEN, netdev->dev_addr, 0) < 0) {
+#endif
 		dev_err(&axdev->intf->dev, "Failed to read MAC address");
 		return -ENODEV;
 	}
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+	if (ax_check_ether_addr(axdev, &addr))
+#else
 	if (ax_check_ether_addr(axdev))
+#endif
 		dev_warn(&axdev->intf->dev, "Found invalid MAC address value");
 
 	ax_get_mac_pass(axdev, netdev->dev_addr);
 
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
+	eth_hw_addr_set(netdev, addr.sa_data);
+#else
 	memcpy(netdev->perm_addr, netdev->dev_addr, ETH_ALEN);
+#endif
 
 	if (ax_write_cmd(axdev, AX_ACCESS_MAC, AX_NODE_ID, ETH_ALEN,
 			ETH_ALEN, netdev->dev_addr) < 0) {

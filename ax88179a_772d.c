@@ -640,16 +640,17 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 	buf = kzalloc(sizeof(u32), GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
-/*
-	*((u32 *)buf) = 1;
 
-	usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0), 0x10,
+	*((u32 *)buf) = 1;
+	
+	if (axdev->chip_version == AX_VERSION_AX88279) {
+		*((u8 *)buf) = 0x41;
+		ax_write_cmd(axdev, 0x2A, 0xAA00, 0, 1, buf);
+	} else {
+		usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0), 0x10,
 			USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 			0x18E8, 0x000F, buf, 4, 10);
-*/
-	*((u8 *)buf) = 0x41;
-
-	ax_write_cmd(axdev, 0x2A, 0xAA00, 0, 1, buf);
+	}
 
 	kfree(buf);
 
@@ -992,6 +993,7 @@ static int ax88179a_set_phy_power(struct ax_device *axdev, bool on)
 #ifdef ENABLE_INT_AGGRESSIVE
 	if (on) {
 		u16 reg16;
+
 		printk("ENABLE_INT_AGGRESSIVE");
 		ax_write_cmd(axdev, 0x32, 0x3, 0, 0, &reg16);
 	}

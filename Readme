@@ -232,9 +232,9 @@ the following command:
        -P [PS]    	 - Product String (Characters must be less than 19 bytes)
        -M [MN]    	 - Manufacture Name (Characters must be less than 19 bytes)
        -D [dump]	 - The parameter content currently in flash (dump)
-       -S [SS]    	 - SS bus power (XX) X:0-896
-       -H [HS]    	 - HS bus power (XX) X:0-500
-       -w [wol]    	 - wake on LAN (XXXXXXXX) X:digit
+       -S [SS]    	 - SS bus power (XX) X:0-896 mA
+       -H [HS]    	 - HS bus power (XX) X:0-500 mA
+       -w [wol]    	 - wake on LAN (XXXXXXXX) X:1 or 0 (About setting dwol_enable s5wol_enable pme_enable)
        -l [led0 value]	 - value: control_blink (XXXX_XXXX)
        -e [led1 value]	 - value: control_blink (XXXX_XXXX)
 	example: 
@@ -242,9 +242,18 @@ the following command:
 
 		$sudo ./ax88279_programmer wpara -p 17:90 -v 0b:95 -P ax88279 -M asix
 
-		$sudo ./ax88279_programmer wpara -S 400 -H 200 -w 21426543
+		$sudo ./ax88279_programmer wpara -S 400 -H 200 -w 01000001(represent:bit[1]= 1, bit[7]= 1)
 
 		$sudo ./ax88279_programmer wpara -l C113_0004 -e C002_0C4F
+	explain:
+		-w bit[0] -> Disable Remote Wakeup, 
+			bit[1] -> PME enable, 
+			bit[2] -> DWOL Magic Packet, 
+			bit[3] -> DWOL Link Change, 
+			bit[4] -> S5 WOL Magic Packet, 
+			bit[5] -> S5 WOL Link Change,
+			bit[6] -> PME Retry Enable,
+			bit[7] -> PME IND Enable,
 
 6. If you want to view the current parameter content in flash, go to the driver directory and execute 
 the following command, and you can see the file parameter.txt in driver directory:

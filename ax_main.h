@@ -76,7 +76,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 				"ASIX AX88279 USB Ethernet Controller"
 #endif
 
-#define DRIVER_VERSION		"3.1.0"
+#define DRIVER_VERSION		"3.2.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC		"ASIX USB Ethernet Controller"
 #define MODULENAME		"ax_usb_nic"
@@ -671,4 +671,37 @@ void ax_mdio_write(struct net_device *netdev, int phy_id, int reg, int val);
 
 
 int ax_usb_command(struct ax_device *axdev, struct _ax_ioctl_command *info);
+
+int ax88179a_autosuspend_en(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_ieee_test(struct ax_device *axdev, 
+				struct _ax_ioctl_command *info);
+int ax88179a_sw_reset(struct ax_device *axdev, 
+				struct _ax_ioctl_command *info);
+int ax88179a_erase_sector_flash(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_erase_flash(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_boot_to_rom(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_dump_efuse(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_program_efuse(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_read_flash(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_write_flash(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_read_version(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179a_signature(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+void ax88179a_get_fw_version(struct ax_device *axdev);
+int ax88179_write_eeprom(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179_read_eeprom(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+int ax88179_signature(struct ax_device *axdev,
+				struct _ax_ioctl_command *info);
+
 #endif /* __ASIX_MAIN_H */

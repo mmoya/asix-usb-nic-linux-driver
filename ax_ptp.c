@@ -20,6 +20,7 @@
 
 #define ptp_to_dev(ptp) container_of(ptp, struct ax_ptp_cfg, ptp_caps)
 
+#ifdef ENABLE_AX88279
 static void ax_reset_ptp_queue(struct ax_device *axdev)
 {
 	struct ax_ptp_cfg *ptp_cfg = axdev->ptp_cfg;
@@ -34,6 +35,7 @@ static void ax_reset_ptp_queue(struct ax_device *axdev)
 
 	memset(ptp_cfg->tx_ptp_info, 0, AX_PTP_INFO_SIZE * AX_PTP_QUEUE_SIZE);
 }
+#endif
 
 static int ax88179a_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
@@ -323,6 +325,7 @@ int ax88179a_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 	return 0;
 }
 
+#ifdef ENABLE_AX88279
 int ax88279_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 {
 	u32 reg32 = 0;
@@ -341,6 +344,7 @@ int ax88279_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 
 	return 0;
 }
+#endif
 
 void ax88179a_ptp_remove(struct ax_device *axdev)
 {
@@ -503,7 +507,9 @@ static struct _ax_ptp_info *ax_ptp_info_transform(struct ax_device *axdev,
 		for (i = 0; i < AX_PTP_HW_QUEUE_SIZE; i++) {
 			memcpy(&temp[i], &_179a_ptp[i], 2);
 			temp[i].sequence_id &= 0xFF;
-			memcpy(&temp[i].nsec, &_179a_ptp[i].nsec, 10);
+			temp[i].nsec = _179a_ptp[i].nsec;
+			temp[i].sec_l = _179a_ptp[i].sec_l;
+			temp[i].sec_h = _179a_ptp[i].sec_h;
 		}
 		memcpy(data, temp, AX_PTP_INFO_SIZE);
 		break;

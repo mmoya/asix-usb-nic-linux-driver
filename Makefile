@@ -13,7 +13,6 @@ ENABLE_RX_TASKLET = n
 ENABLE_PTP_FUNC = n
 ENABLE_PTP_DEBUG = n
 ENABLE_QUEUE_PRIORITY = n
-ENABLE_AX88279_MINIP_2_5G = n
 
 obj-m := $(TARGET).o
 $(TARGET)-objs := ax_main.o ax88179_178a.o ax88179a_772d.o
@@ -65,13 +64,6 @@ ifeq ($(ENABLE_QUEUE_PRIORITY), y)
 endif
 
 	EXTRA_CFLAGS += -DENABLE_AX88279
-ifeq ($(ENABLE_MACSEC_FUNC), y)
-	$(TARGET)-objs += ax_macsec.o
-	EXTRA_CFLAGS += -DENABLE_MACSEC_FUNC
-endif
-ifeq ($(ENABLE_AX88279_MINIP_2_5G), y)
-	EXTRA_CFLAGS += -DENABLE_AX88279_MINIP_2_5G
-endif
 
 ifneq (,$(filter $(SUBLEVEL),14 15 16 17 18 19 20 21))
 MDIR	= kernel/drivers/usb/net

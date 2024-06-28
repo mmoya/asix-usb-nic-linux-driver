@@ -802,7 +802,11 @@ static int ax88179_bind(struct ax_device *axdev)
 	netdev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
 			       NETIF_F_SG | NETIF_F_TSO | NETIF_F_FRAGLIST;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 	netdev->max_mtu = (9 * 1024);
+#else
+	axdev->max_mtu = (9 * 1024);
+#endif
 	axdev->tx_casecade_size = TX_CASECADES_SIZE;
 	axdev->gso_max_size = AX_GSO_DEFAULT_SIZE;
 	axdev->mii.supports_gmii = 1;

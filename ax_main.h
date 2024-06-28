@@ -76,7 +76,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 				"ASIX AX88279 USB Ethernet Controller"
 #endif
 
-#define DRIVER_VERSION		"3.2.0"
+#define DRIVER_VERSION		"3.3.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC		"ASIX USB Ethernet Controller"
 #define MODULENAME		"ax_usb_nic"
@@ -462,6 +462,7 @@ struct ax_device {
 	u32 msg_enable;
 	u32 tx_qlen;
 	u32 coalesce;
+	u32 max_mtu;
 	u16 speed;
 	u8 *intr_buff;
 	u8 tx_align_len;
@@ -490,9 +491,6 @@ struct ax_device {
 #ifdef ENABLE_PTP_FUNC
 	struct ax_ptp_cfg *ptp_cfg;
 	struct sk_buff_head tx_timestamp;
-#endif
-#ifdef ENABLE_MACSEC_FUNC
-	struct ax_macsec_cfg *macsec_cfg;
 #endif
 	u64 bulkin_complete;
 	u64 bulkin_error;
@@ -617,6 +615,7 @@ static inline struct net_device_stats *ax_get_stats(struct net_device *netdev)
 }
 
 int ax_get_mac_pass(struct ax_device *axdev, u8 *mac);
+int ax_check_ether_addr(struct ax_device *axdev, struct sockaddr *p);
 void ax_set_tx_qlen(struct ax_device *dev);
 void ax_write_bulk_callback(struct urb *urb);
 

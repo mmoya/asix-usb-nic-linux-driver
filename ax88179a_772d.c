@@ -19,9 +19,6 @@
 #ifdef ENABLE_PTP_FUNC
 #include "ax_ptp.h"
 #endif
-#ifdef ENABLE_MACSEC_FUNC
-#include "ax_macsec.h"
-#endif
 
 struct _ax_buikin_setting AX88179A_BULKIN_SIZE[] = {
 	{5, 0x7B, 0x00,	0x18, 0x0F},	//1G, SS
@@ -642,7 +639,7 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 		return -ENOMEM;
 
 	*((u32 *)buf) = 1;
-	
+#ifdef ENABLE_AX88279	
 	if (axdev->chip_version == AX_VERSION_AX88279) {
 		*((u8 *)buf) = 0x41;
 		ax_write_cmd(axdev, 0x2A, 0xAA00, 0, 1, buf);
@@ -651,7 +648,11 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 			0x18E8, 0x000F, buf, 4, 10);
 	}
-
+#else
+	usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0), 0x10,
+		USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+		0x18E8, 0x000F, buf, 4, 10);
+#endif
 	kfree(buf);
 
 	return 0;
@@ -1056,7 +1057,11 @@ static int ax88179a_bind(struct ax_device *axdev)
 				NETIF_F_HIGHDMA | NETIF_F_FRAGLIST |
 				NETIF_F_IPV6_CSUM;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 	netdev->max_mtu = (9 * 1024);
+#else
+	axdev->max_mtu = (9 * 1024);
+#endif
 	axdev->tx_casecade_size = TX_CASECADES_SIZE;
 	axdev->gso_max_size = AX_GSO_DEFAULT_SIZE;
 	axdev->mii.supports_gmii = true;
@@ -1092,12 +1097,6 @@ static int ax88179a_bind(struct ax_device *axdev)
 		netdev_warn(netdev,
 			    "Failed to register PHC device. (%d)\n", ret);
 #endif
-#ifdef ENABLE_MACSEC_FUNC
-	ret = ax_macsec_register(axdev);
-	if (ret < 0)
-		netdev_warn(netdev,
-			    "Failed to register MACsec feature. (%d)\n", ret);
-#endif
 
 #ifdef ENABLE_AUTOSUSPEND
 	axdev->autosuspend_is_supported = true;
@@ -1114,9 +1113,6 @@ static void ax88179a_unbind(struct ax_device *axdev)
 {
 #ifdef ENABLE_PTP_FUNC
 	ax_ptp_unregister(axdev);
-#endif
-#ifdef ENABLE_MACSEC_FUNC
-	ax_macsec_unregister(axdev);
 #endif
 }
 
@@ -1221,24 +1217,6 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 
 #ifdef ENABLE_AX88279
 	if (axdev->chip_version == AX_VERSION_AX88279) {
-#ifdef ENABLE_AX88279_MINIP_2_5G
-		do {
-			int i;
-
-			ax_mmd_write(axdev->netdev, 0x07, 0, 0x2000);
-			for (i = 0; i < 1000; i++) {
-				reg16 = ax_mmd_read(axdev->netdev, 0x07, 0x10);
-				ax_mmd_write(axdev->netdev, 0x07, 0x10,
-						(reg16 | 0x0C00));
-				reg16 = ax_mmd_read(axdev->netdev, 0x07, 0x10);
-				if (reg16 & 0x0C00)
-					break;
-			}
-			ax_mmd_write(axdev->netdev, 0x07, 0xC400, 0x1453);
-			ax_mmd_write(axdev->netdev, 0x07, 0x20, 0x1);
-			ax_mmd_write(axdev->netdev, 0x07, 0, 0x3200);
-		} while (0);
-#else
 		reg16 = ax_mdio_read(axdev->netdev, axdev->mii.phy_id,
 				     MII_ADVERTISE);
 		reg16 &= ~(ADVERTISE_10FULL | ADVERTISE_10HALF);
@@ -1250,7 +1228,6 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 			      (reg16 | CTL1000_AS_MASTER));
 		ax_mdio_write(axdev->netdev, axdev->mii.phy_id, 0,
 			      (BMCR_ANRESTART | BMCR_ANENABLE));
-#endif
 	}
 #endif
 	ret = ax88179a_autodetach(axdev);
@@ -1700,11 +1677,6 @@ static int ax88179a_link_reset(struct ax_device *axdev)
 		axdev->driver_info->ptp_init(axdev);
 #endif
 
-#ifdef ENABLE_MACSEC_FUNC
-	if (axdev->driver_info->macsec_init)
-		axdev->driver_info->macsec_init(axdev);
-#endif
-
 	return 0;
 }
 #ifdef ENABLE_AX88279
@@ -1726,7 +1698,8 @@ static int ax88279_set_bulkin_setting(struct ax_device *axdev)
 {
 	struct ax_link_info *link_info = &axdev->link_info;
 	u8 link_sts;
-	int index, ret;
+	int index = 7;
+	int ret;
 
 	ret = ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, PHYSICAL_LINK_STATUS,
 			       1, 1, &link_sts, 0);
@@ -1769,8 +1742,8 @@ static int ax88279_set_bulkin_setting(struct ax_device *axdev)
 	} else {
 		u16 timer = ax88179a_usec_to_bin_timer(axdev);
 
-		AX88179A_BULKIN_SIZE[index].timer_l = timer & 0xFF;
-		AX88179A_BULKIN_SIZE[index].timer_h = (timer >> 8) & 0xFF;
+		AX88279_BULKIN_SIZE[index].timer_l = timer & 0xFF;
+		AX88279_BULKIN_SIZE[index].timer_h = (timer >> 8) & 0xFF;
 	}
 
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL,
@@ -2137,11 +2110,6 @@ static int ax88279_link_reset(struct ax_device *axdev)
 #ifdef ENABLE_PTP_FUNC
 	if (axdev->driver_info->ptp_init)
 		axdev->driver_info->ptp_init(axdev);
-#endif
-
-#ifdef ENABLE_MACSEC_FUNC
-	if (axdev->driver_info->macsec_init)
-		axdev->driver_info->macsec_init(axdev);
 #endif
 
 	return 0;
@@ -2570,9 +2538,6 @@ const struct driver_info ax88279_info = {
 	.ptp_pps_ctrl = ax88279_ptp_pps_ctrl,
 	.ptp_init	= ax88279_ptp_init,
 	.ptp_remove	= ax88279_ptp_remove,
-#endif
-#ifdef ENABLE_MACSEC_FUNC
-	.macsec_init	= ax_macsec_init,
 #endif
 	.napi_weight	= AX88279_NAPI_WEIGHT,
 	.buf_rx_size	= AX88279_BUF_RX_SIZE,

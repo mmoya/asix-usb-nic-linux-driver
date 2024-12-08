@@ -1775,6 +1775,7 @@ int ax_usb_command(struct ax_device *axdev, struct _ax_ioctl_command *info)
 	struct _ax_usb_command *usb_cmd = &info->usb_cmd;
 	void *buf;
 	int err, timeout;
+	u32 pipe = 0;
 	u16 size = usb_cmd->size;
 	u8 reqtype;
 
@@ -1785,12 +1786,14 @@ int ax_usb_command(struct ax_device *axdev, struct _ax_ioctl_command *info)
 	if (usb_cmd->ops == USB_READ_OPS) {
 		reqtype = USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE;
 		timeout = USB_CTRL_GET_TIMEOUT;
+		pipe = usb_rcvctrlpipe(axdev->udev, 0);
 	} else {
 		reqtype = USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE;
 		timeout = USB_CTRL_SET_TIMEOUT;
+		pipe = usb_sndctrlpipe(axdev->udev, 0);
 	}
 
-	err = usb_control_msg(axdev->udev, usb_rcvctrlpipe(axdev->udev, 0),
+	err = usb_control_msg(axdev->udev, pipe,
 			      usb_cmd->cmd, reqtype, usb_cmd->value,
 			      usb_cmd->index, buf, size, timeout);
 	if (err > 0 && err <= size)

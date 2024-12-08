@@ -76,7 +76,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 				"ASIX AX88279 USB Ethernet Controller"
 #endif
 
-#define DRIVER_VERSION		"3.3.0"
+#define DRIVER_VERSION		"3.4.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC		"ASIX USB Ethernet Controller"
 #define MODULENAME		"ax_usb_nic"

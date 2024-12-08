@@ -619,7 +619,7 @@ int ax_ptp_ts_read_cmd_async(struct ax_device *axdev)
 	memset(info->ax_ptp_info, 0, AX_PTP_INFO_SIZE * AX_PTP_QUEUE_SIZE);
 
 	usb_fill_control_urb(urb, axdev->udev,
-			     usb_sndctrlpipe(axdev->udev, 0),
+			     usb_rcvctrlpipe(axdev->udev, 0),
 			     (void *)req, info->ax_ptp_info, size,
 			     ax_ptp_ts_callback, info);
 

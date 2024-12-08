@@ -31,6 +31,7 @@
 #define NOT_PROGRAM
 #endif
 #define RELOAD_DELAY_TIME	10	// sec
+#define EFUSE_NUM_BLOCK	32
 
 #define PRINT_IOCTL_FAIL(ret) \
 fprintf(stderr, "%s: ioctl failed. (err: %d)\n", __func__, ret)
@@ -60,6 +61,11 @@ const char readmac_str1[] =
 "    -- AX88179B_179A_772E_772D Read MAC Address\n";
 static const char readmac_str2[] = "";
 
+const char readserial_str1[] =
+"./ax88179b_179a_772e_772d_programmer rserial\n"
+"    -- AX88179B_179A_772E_772D Read Serial Number\n";
+static const char readserial_str2[] = "";
+
 const char writeflash_str1[] =
 "./ax88179b_179a_772e_772d_programmer wflash [file]\n"
 "    -- AX88179B_179A_772E_772D Write Flash\n";
@@ -67,12 +73,13 @@ const char writeflash_str2[] =
 "        [file]    - Flash file path\n";
 
 const char writeefuse_str1[] =
-"./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -f [File] --led0 [value]"
+"./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -w [wol] -f [File] --led0 [value]"
 " --led1 [value] -p [device]\n"
 "    -- AX88179B_179A_772E_772D Write eFuse\n";
 const char writeefuse_str2[] =
 "        -m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)\n"
 "        -s [SN]     - Serial number\n"
+"        -w [wol]    	 - wake on LAN (XXXXXXXX) X:digit\n"
 "        -f [File]   - eFuse file path\n"
 "        --led0 [value]   - value: control_blink (XXXX_XXXX)\n"
 "        --led1 [value]   - value: control_blink (XXXX_XXXX)\n"
@@ -92,6 +99,7 @@ static const char reload_str2[] = "";
 static int help_func(struct ax_command_info *info);
 static int readversion_func(struct ax_command_info *info);
 static int readmac_func(struct ax_command_info *info);
+static int readserial_func(struct ax_command_info *info);
 static int writeflash_func(struct ax_command_info *info);
 static int writeefuse_func(struct ax_command_info *info);
 static int readefuse_func(struct ax_command_info *info);
@@ -119,6 +127,13 @@ struct _command_list ax88179a_cmd_list[] = {
 		readmac_func,
 		readmac_str1,
 		readmac_str2
+	},
+	{
+		"rserial",
+		~0,
+		readserial_func,
+		readserial_str1,
+		readserial_str2
 	},
 	{
 		"wflash",
@@ -181,6 +196,14 @@ static unsigned char sample_type11[] = {
  0x00, 0x00, 0x45, 0x00
 };
 
+static unsigned char sample_type15[] = {
+ 0x0F, 0x7D, 0x01, 0x63,
+ 0x81, 0x7F, 0x7F, 0x5F,
+ 0x5D, 0x2F, 0x07, 0xE8,
+ 0x04, 0x7D, 0x00, 0xC8,
+ 0x08, 0x01, 0x04, 0x00
+};
+
 #pragma pack(push)
 #pragma pack(1)
 enum _ef_Type_Def {
@@ -188,6 +211,7 @@ enum _ef_Type_Def {
 	EF_TYPE_01 = 0x01,
 	EF_TYPE_04 = 0x04,
 	EF_TYPE_11 = 0x0B,
+	EF_TYPE_15 = 0x0F,
 };
 struct _ef_type {
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -238,11 +262,35 @@ struct _ef_type11 {
 };
 #define EF_TYPE_STRUCT_SIZE_11	sizeof(struct _ef_type11)
 
+struct _ef_type15 {
+	struct _ef_type	type;
+	unsigned char	flag1;
+	unsigned char	flag2;
+	unsigned char	flag3;
+	unsigned char	flag4;
+	unsigned char	U1_inact_timer;
+	unsigned char	U2_inact_timer;
+	unsigned char	Lpm_besl_u3;
+	unsigned char	Lpm_besl;
+	unsigned char	Lpm_besld;
+	unsigned short	Ltm_belt_down;
+	unsigned short	Ltm_belt_up;
+	unsigned short	Ephy_poll_timer;
+
+	unsigned char	Pme_gpio_sel;
+	unsigned char	Pme_pulse_width;
+	unsigned char	Wol_mask_timer;
+
+	unsigned char	reserve;
+};
+#define EF_TYPE_STRUCT_SIZE_15	sizeof(struct _ef_type15)
+
 struct _ef_data_struct {
 	union {
 		struct _ef_type01 type01;
 		struct _ef_type04 type04;
 		struct _ef_type11 type11;
+		struct _ef_type15 type15;
 	} ef_data;
 };
 #define EF_DATA_STRUCT_SIZE	sizeof(struct _ef_data_struct)
@@ -395,6 +443,46 @@ static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
 	return SUCCESS;
 }
 
+static int read_serial_number(struct ax_command_info *info, unsigned char *serial_number)
+{
+    struct ifreq *ifr = (struct ifreq *)info->ifr;
+    struct _ax_ioctl_command ioctl_cmd;
+    struct _ef_data_struct efuse[EFUSE_NUM_BLOCK];
+    int ret, i;
+
+    DEBUG_PRINT("=== %s - Start\n", __func__);
+
+    ret = scan_ax_device(ifr, info->inet_sock);
+    if (ret < 0) {
+        PRINT_SCAN_DEV_FAIL;
+        return ret;
+    }
+
+    ioctl_cmd.ioctl_cmd = AX88179A_DUMP_EFUSE;
+    ioctl_cmd.flash.length = 20;
+    ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+    for (i = EFUSE_NUM_BLOCK - 1; i > 0; i--) {
+        ioctl_cmd.flash.offset = i;
+        ioctl_cmd.flash.buf = (unsigned char *)&efuse[i];
+
+        ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
+        if (ret < 0) {
+            PRINT_IOCTL_FAIL(ret);
+            return ret;
+        }
+
+        if (efuse[i].ef_data.type04.type.type == EF_TYPE_04) {
+            memcpy(serial_number, efuse[i].ef_data.type04.serial, sizeof(efuse[i].ef_data.type04.serial));
+            serial_number[sizeof(efuse[i].ef_data.type04.serial)] = '\0';
+            return SUCCESS;
+        }
+    }
+
+    fprintf(stderr, "%s: No serial number found in eFuse\n", __func__);
+
+    return -FAIL_GENERIAL_ERROR;
+}
 static int readversion_func(struct ax_command_info *info)
 {
 	char version[16] = {0};
@@ -455,6 +543,31 @@ static int readmac_func(struct ax_command_info *info)
 			mac[5]);
 
 	return ret;
+}
+
+static int readserial_func(struct ax_command_info *info)
+{
+    unsigned char serial_number[19] = {0};
+    int i, ret;
+
+    DEBUG_PRINT("=== %s - Start\n", __func__);
+
+    if (info->argc != 2) {
+        for (i = 0; ax88179a_cmd_list[i].cmd != NULL; i++) {
+            if (strncmp(info->argv[1], ax88179a_cmd_list[i].cmd,
+                        strlen(ax88179a_cmd_list[i].cmd)) == 0) {
+                printf("%s%s\n", ax88179a_cmd_list[i].help_ins,
+                       ax88179a_cmd_list[i].help_desc);
+                return -FAIL_INVALID_PARAMETER;
+            }
+        }
+    }
+
+    ret = read_serial_number(info, serial_number);
+    if (ret == SUCCESS)
+        printf("Serial Number: %s\n", serial_number);
+
+    return ret;
 }
 
 static int write_flash(struct ax_command_info *info, unsigned char *data,
@@ -727,7 +840,7 @@ static int __find_efuse_index(struct _ef_data_struct *efuse,
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 5; i < EFUSE_NUM_BLOCK; i++) {
+	for (i = 6; i < EFUSE_NUM_BLOCK; i++) {
 		if (efuse[i].ef_data.type01.type.type == type)
 			return i;
 	}
@@ -770,6 +883,74 @@ static int change_serial_number(struct _ef_data_struct *efuse, char *serial)
 
 	memset(efuse[index].ef_data.type04.serial, 0, 18);
 	memcpy(efuse[index].ef_data.type04.serial, serial, strlen(serial));
+	checksum_efuse_block((unsigned char *)&efuse[index]);
+
+	return SUCCESS;
+}
+
+static int change_wol(struct _ef_data_struct *efuse, char *wol)
+{
+	int i = 0, index = 0;
+	unsigned int dwolEn = 0;
+	unsigned int s5wolEn = 0;
+	unsigned int pmeEn = 0;
+
+	index = __find_efuse_index(efuse, EF_TYPE_15);
+	if (index == -FAIL_GENERIAL_ERROR) {
+		fprintf(stderr, "%s: Not found type 15 from eFuese file\n",
+			__func__);
+		return -FAIL_GENERIAL_ERROR;
+	}
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	for (i = 0; i < 8; i++) {
+		unsigned char bit_value = 0;
+		bit_value = (wol[i]-'0');
+
+		if (i == 0 && bit_value == 1) { // Disable Remote Wakeup
+			dwolEn = 1;
+			efuse[index].ef_data.type15.flag1 &= ~0x01;
+			break; 
+		}
+		if (i == 1 && bit_value == 1) { // PME Enable
+			pmeEn = 1;
+			efuse[index].ef_data.type15.flag2 |= 0x10;
+		}
+		if (i == 2 && bit_value == 1) { // DWOL Magic Packet
+			dwolEn = 1;
+			efuse[index].ef_data.type15.flag1 |= 0x02;
+			efuse[index].ef_data.type15.flag2 |= 0x1C;
+		}
+		if (i == 3 && bit_value == 1) { // DWOL Link Change
+			dwolEn = 1;
+			efuse[index].ef_data.type15.flag1 |= 0x02;
+			efuse[index].ef_data.type15.flag2 |= 0x1A;
+		}
+		if (i == 4 && bit_value == 1) { // S5 WOL Magic Packet
+			s5wolEn = 1;
+			efuse[index].ef_data.type15.flag1 |= 0x02;
+			efuse[index].ef_data.type15.flag2 |= 0x18;
+			efuse[index].ef_data.type15.flag4 |= 0x28;
+		}
+		if (i == 5 && bit_value == 1) { // S5 WOL Link Change
+			s5wolEn = 1;
+			efuse[index].ef_data.type15.flag1 |= 0x02;
+			efuse[index].ef_data.type15.flag2 |= 0x18;
+			efuse[index].ef_data.type15.flag4 |= 0x18;
+		}
+
+		if (dwolEn || s5wolEn || pmeEn) {
+			if (i == 6 && bit_value == 1) { // PME Retry Enable
+				efuse[index].ef_data.type15.flag2 |= 0x80;
+			}
+			if (i == 7 && bit_value == 1) { // PME IND Enable
+				efuse[index].ef_data.type15.flag2 |= 0x40;
+			}
+
+		}
+	}
+
 	checksum_efuse_block((unsigned char *)&efuse[index]);
 
 	return SUCCESS;
@@ -888,7 +1069,7 @@ static int find_empty_block_index(struct _ef_data_struct *efuse)
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 5; i < EFUSE_NUM_BLOCK; i++) {
+	for (i = 6; i < EFUSE_NUM_BLOCK; i++) {
 		if (efuse[i].ef_data.type01.type.type == EF_TYPE_REV)
 			break;
 	}
@@ -963,7 +1144,7 @@ static int merge_efuse(struct _ef_data_struct *dump_efuse,
 
 	*program_block = 0;
 	*program_index = -1;
-	for (i = 5, j = dump_empty_index; i < EFUSE_NUM_BLOCK; i++, j++) {
+	for (i = 6, j = dump_empty_index; i < EFUSE_NUM_BLOCK; i++, j++) {
 		unsigned char *block = (unsigned char *)&file_efuse[i];
 		int ret;
 
@@ -1034,6 +1215,7 @@ static struct option const long_options[] =
   {"file", required_argument, NULL, 'f'},
   {"mac", required_argument, NULL, 'm'},
   {"serial", required_argument, NULL, 's'},
+  {"wol", required_argument, NULL, 'w'},
   {"device", required_argument, NULL, 'p'},
   {"led0", required_argument, NULL, 'l'},
   {"led1", required_argument, NULL, 'e'},
@@ -1043,6 +1225,7 @@ static struct option const long_options[] =
 struct __wefuse {
 	char *mac_address;
 	char *serial_num;
+	char *wol;
 	char *file_path;
 	char *led0;
 	char *led1;
@@ -1053,7 +1236,7 @@ struct __wefuse {
 static void creat_sample_efuse(struct _ef_data_struct *efuse,
 			       struct __wefuse *par)
 {
-	int index = 5;
+	int index = 6;
 
 	if (par->mac_address) {
 		memcpy(&efuse[index], sample_type1, EF_TYPE_STRUCT_SIZE_01);
@@ -1072,6 +1255,9 @@ static void creat_sample_efuse(struct _ef_data_struct *efuse,
 
 	if (par->led1)
 		set_led(&efuse[index++], par->led1, 1);
+
+	if (par->wol)
+		memcpy(&efuse[index++], sample_type15, EF_TYPE_STRUCT_SIZE_15);
 }
 
 static int print_msg(char *cmd)
@@ -1129,7 +1315,7 @@ static int writeefuse_func(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	while ((c = getopt_long(info->argc, info->argv,
-				"m:s:f:p:l:e:",
+				"m:s:w:f:p:l:e:",
 				long_options, &oi)) != -1) {
 		switch (c) {
 		case 'm':
@@ -1151,6 +1337,10 @@ static int writeefuse_func(struct ax_command_info *info)
 			DEBUG_PRINT("%s \r\n", argument.serial_num);
 			if (strlen(argument.serial_num) > 18)
 				return print_msg("wefuse");
+			break;
+		case 'w':
+			argument.wol = optarg;
+			DEBUG_PRINT("%s \r\n", argument.wol);
 			break;
 		case 'f':
 			argument.file_path = optarg;
@@ -1228,9 +1418,63 @@ static int writeefuse_func(struct ax_command_info *info)
 		}
 	}
 
+	if (argument.wol) {
+
+		int valid = 1;
+
+		if (strlen(argument.wol) != 8)	{
+			printf("FAIL: The value must be 8 digit\n");
+			return -FAIL_INVALID_PARAMETER;
+		}
+
+		int time = 0;
+		for(time = 0; time < 8; time++) {
+			if (argument.wol[time] != '0' && argument.wol[time] != '1') {
+				printf("FAIL: The value must be 1 or 0\n");
+				return -FAIL_INVALID_PARAMETER;
+			}
+		}
+
+		int count = 0;
+		for(time = 0; time < 8; time++) {
+			if (argument.wol[time] == '1')
+				count++;
+		}
+
+		if (count >= 1 && count != 8)
+			valid = 1;
+		else
+			valid = 0;
+
+		if (argument.wol[0] == '1') {
+			for(time = 1; time < 8; time++) {
+				if (argument.wol[time] == '1')
+					valid = 0;
+			}
+		} else if (argument.wol[0] == '0' && argument.wol[1] == '0') {
+			for(time = 2; time < 8; time++) {
+				if (argument.wol[time] == '1')
+					valid = 0;
+			}
+		}
+
+		if(!valid) {
+				printf("FAIL: The value is invalid\n");
+				return -FAIL_INVALID_PARAMETER;
+		}
+
+		ret = change_wol(file_efuse, argument.wol);
+		if (ret < 0) {
+			fprintf(stderr,
+				"%s: Changing Wake on LAN failed.\n",
+				__func__);
+			goto fail;
+		}
+	}
+
 	autosuspend_enable(info, 0);
 
-	DUMP_EFUSE_DATA(file_efuse);
+	//DUMP_EFUSE_DATA(file_efuse);
 
 	ret = dump_efuse_from_chip(info, dump_efuse);
 	if (ret < 0)

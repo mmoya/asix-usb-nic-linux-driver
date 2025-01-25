@@ -269,7 +269,7 @@ static int ax88179a_set_coalesce(struct net_device *netdev,
 
 #ifdef ENABLE_PTP_FUNC
 static int ax88179a_set_wol_get_ts_info
-(struct net_device *dev, struct ethtool_ts_info *info)
+(struct net_device *dev, struct kernel_ethtool_ts_info *info)
 {
 	struct ax_device *axdev = (struct ax_device *)netdev_priv(dev);
 	struct ax_ptp_cfg *ptp_cfg = axdev->ptp_cfg;

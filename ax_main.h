@@ -76,7 +76,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 				"ASIX AX88279 USB Ethernet Controller"
 #endif
 
-#define DRIVER_VERSION		"3.4.0"
+#define DRIVER_VERSION		"3.5.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC		"ASIX USB Ethernet Controller"
 #define MODULENAME		"ax_usb_nic"
@@ -477,6 +477,7 @@ struct ax_device {
 	struct ax_link_info intr_link_info;
 	u8  eee_enabled;
 	u8  eee_active;
+	u8	ipalign;
 	int autodetach;
 
 	struct ax_bulkin_setting bin_setting;
@@ -633,6 +634,7 @@ u32 ax_get_msglevel(struct net_device *netdev);
 void ax_set_msglevel(struct net_device *netdev, u32 value);
 void ax_get_wol(struct net_device *net, struct ethtool_wolinfo *wolinfo);
 int ax_set_wol(struct net_device *net, struct ethtool_wolinfo *wolinfo);
+int ax_set_s5_wol(struct ax_device *axdev, u8 enable);
 int ax_get_sset_count(struct net_device *dev, int sset);
 void ax_get_ethtool_stats
 (struct net_device *dev, struct ethtool_stats *stats, u64 *data);

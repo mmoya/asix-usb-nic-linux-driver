@@ -701,14 +701,14 @@ static int find_offest_max_index(int *offset_arr, int size)
 static int writeflash_func(struct ax_command_info *info)
 {
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
-	unsigned char *wbuf = NULL, *rbuf = NULL;
+	unsigned char *rbuf = NULL, *filebuf = NULL, *cmpbuf = NULL;
 	FILE *pFile = NULL;
-	size_t result;
-	int file_length = 0;
-	int i, offset, ret;
-	char fw_version[16] = {0};
+	unsigned int ret, para_pri_offset, para_pri_length, file_length;
+	unsigned int para_sec_offset, para_sec_length, result, i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	printf("Please wait until SUCCESS or FAIL occurs\n");
 
 	if (info->argc != 3) {
 		for (i = 0; ax88279_cmd_list[i].cmd != NULL; i++) {
@@ -721,18 +721,13 @@ static int writeflash_func(struct ax_command_info *info)
 		}
 	}
 
-	autosuspend_enable(info, 0);
-
 	ret = scan_ax_device(ifr, info->inet_sock);
 	if (ret < 0) {
 		PRINT_SCAN_DEV_FAIL;
 		return ret;
 	}
 
-	ret = erase_flash(info);
-	if (ret < 0) 
-		return ret;
-
+	/* Read the file of FW */
 	pFile = fopen(info->argv[2], "rb");
 	if (pFile == NULL) {
 		fprintf(stderr, "%s: Fail to open %s file.\n",
@@ -745,50 +740,127 @@ static int writeflash_func(struct ax_command_info *info)
 	file_length = ftell(pFile);
 	fseek(pFile, 0, SEEK_SET);
 
-	wbuf = (unsigned char *)malloc((file_length + 256) & ~(0xFF));
-	if (!wbuf) {
+	filebuf = (unsigned char *)malloc(file_length);
+	if (!filebuf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		ret = -FAIL_ALLCATE_MEM;
 		goto fail;
 	}
-	memset(wbuf, 0, (file_length + 256) & ~(0xFF));
 
-	result = fread(wbuf, 1, file_length, pFile);
+	result = fread(filebuf, 1, file_length, pFile);
 	if (result != file_length) {
 		PRINT_LOAD_FILE_FAIL;
 		ret = -PRINT_LOAD_FILE_FAIL;
 		goto fail;
 	}
 
-	ret = write_flash(info, wbuf, FLASH_PARA_OFFSET, result);
+	/* Original data of parameter on flash  */
+	rbuf = (unsigned char *)malloc(MEM_SIZE);
+	if (!rbuf) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto fail;
+	}
+	memset(rbuf, 0, MEM_SIZE);
+
+	ret = read_flash(info, rbuf, 0, MEM_SIZE);
 	if (ret < 0)
 		goto fail;
 
-	ret = write_flash(info, wbuf, 0, FLASH_PARA_OFFSET);
+	para_pri_offset = SWAP_32(*(unsigned long *)&rbuf[PARAMETER_PRI_OFFSET]);
+	para_pri_length = 20 * SWAP_16(*(unsigned short *)&rbuf[PARAMETER_PRI_BLOCK_COUNT]);
+
+	para_sec_offset = SWAP_32(*(unsigned long *)&rbuf[PARAMETER_SEC_OFFSET]);
+	para_sec_length = 20 * SWAP_16(*(unsigned short *)&rbuf[PARAMETER_SEC_BLOCK_COUNT]);
+
+	for (i = 0; i < 0x18; i++)
+		filebuf[PARAMETER_PRI_HEADER_OFFSET + i] = rbuf[PARAMETER_PRI_HEADER_OFFSET + i];	
+
+	for (i = 0; i < para_pri_length; i++)
+		filebuf[para_pri_offset + i] = rbuf[para_pri_offset + i];	
+
+	for (i = 0; i < para_sec_length; i++)
+		filebuf[para_sec_offset + i] = rbuf[para_sec_offset + i];	
+
+	/* Write back the local filebuf to flash */
+	erase_flash(info);
+
+	ret = write_flash(info, filebuf, 0, MEM_SIZE);
+	if (ret < 0) {
+		fprintf(stderr, "Fail to write updated FW1 header\n");
+		goto fail;
+	}
+
+	/* Compare the header of parameter */
+	cmpbuf = (unsigned char *)malloc(MEM_SIZE);
+	if (!cmpbuf) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto fail;
+	}
+	memset(cmpbuf, 0, MEM_SIZE);
+	ret = read_flash(info, cmpbuf, 0, MEM_SIZE);
 	if (ret < 0)
 		goto fail;
 
-	offset = SWAP_32(*(unsigned long *)&wbuf[0]);
-	sprintf(fw_version, "v%d.%d.%d",
-		wbuf[offset + 0x1000],
-		wbuf[offset + 0x1001],
-		wbuf[offset + 0x1002]);
-	printf("File FW Version: %s\n", fw_version);
-	
+	if (memcmp(&cmpbuf[PARAMETER_PRI_HEADER_OFFSET], 
+			   &filebuf[PARAMETER_PRI_HEADER_OFFSET], 0x18) != 0) {
+		fprintf(stderr, "%s: Compare parameter header failed.\n", __func__);
+		ret = -FAIL_FLASH_WRITE;
+		goto fail;
+	}
+
+	/* Compare the data of parameter */
+	if (memcmp(&cmpbuf[para_pri_offset], 
+			   &filebuf[para_pri_offset], para_pri_length) != 0) {
+		fprintf(stderr, "%s: Compare parameter pri failed.\n", __func__);
+		ret = -FAIL_FLASH_WRITE;
+		goto fail;
+	}
+
+	if (memcmp(&cmpbuf[para_sec_offset], 
+			   &filebuf[para_sec_offset], para_sec_length) != 0) {
+		fprintf(stderr, "%s: Compare parameter sec failed.\n", __func__);
+		ret = -FAIL_FLASH_WRITE;
+		goto fail;
+	}
+
 	ret = SUCCESS;
 	goto out;
 
 fail:
 	erase_flash(info);
+	printf("FAIL\n");
 out:
-	if (wbuf)
-		free(wbuf);
+	if (rbuf)
+		free(rbuf);
+	if (filebuf)
+		free(filebuf);
+	if (cmpbuf)
+		free(cmpbuf);
 	if (pFile)
 		fclose(pFile);
 
-	autosuspend_enable(info, 1);
-
 	return ret;
+}
+
+static unsigned short header_check_calc(unsigned char *fw1_header)
+{
+    unsigned short *pData = (unsigned short *)fw1_header;
+    unsigned long Sum = 0;
+    int i;
+
+    for (i = 0; i < 10; i++) {
+        if (i == 5)
+            continue;
+        Sum += pData[i];
+    }
+
+    while (Sum > 0xFFFF)
+        Sum = (Sum & 0xFFFF) + (Sum >> 16);
+
+    Sum = 0xFFFF - Sum;
+    return (unsigned short)Sum;
 }
 
 static int print_msg(char *cmd)

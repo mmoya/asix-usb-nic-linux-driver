@@ -265,8 +265,29 @@ int ax_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wolinfo)
 	if (ret < 0)
 		return ret;
 
+#ifdef ENABLE_AX88279
+	ret = ax_set_s5_wol(axdev, reg8);
+	if (ret < 0)
+		return ret;
+#endif
+
 	return 0;
 }
+
+#ifdef ENABLE_AX88279
+int ax_set_s5_wol(struct ax_device *axdev, u8 enable) 
+{
+	int ret = 0;
+	
+	if (axdev->chip_version == AX_VERSION_AX88279) {
+		ret = ax_write_cmd(axdev, AX8179A_WAKEUP_SETTING, 8,
+			((enable & (AX_MONITOR_MODE_RWLC | AX_MONITOR_MODE_RWMP)) ? 
+			(S5_WOL_EN | S5_WOL_LOW_POWER | 0x8000) : 0x8000), 0, NULL);
+	}
+	
+	return ret;
+}
+#endif
 
 static const char ax_gstrings[][ETH_GSTRING_LEN] = {
 	"tx_packets",
@@ -1665,10 +1686,10 @@ static void ax_set_carrier(struct ax_device *axdev)
 #endif
 
 	if (axdev->link) {
-#ifdef ENABLE_PTP_FUNC
-		axdev->driver_info->ptp_pps_ctrl(axdev, 1);
-#endif
 		if (!netif_carrier_ok(netdev)) {
+#ifdef ENABLE_PTP_FUNC
+			axdev->driver_info->ptp_pps_ctrl(axdev, 1);
+#endif
 			if (axdev->driver_info->link_reset(axdev))
 				return;
 			netif_stop_queue(netdev);
@@ -1690,11 +1711,20 @@ static void ax_set_carrier(struct ax_device *axdev)
 			netif_wake_queue(netdev);
 		}
 	} else {
-#ifdef ENABLE_PTP_FUNC
-		axdev->driver_info->ptp_pps_ctrl(axdev, 0);
-#endif
 		if (netif_carrier_ok(netdev)) {
 			netif_carrier_off(netdev);
+#ifdef ENABLE_PTP_FUNC
+			axdev->driver_info->ptp_pps_ctrl(axdev, 0);
+#endif
+#ifdef ENABLE_AX88279
+			if (axdev->chip_version == AX_VERSION_AX88279) {
+				u8 reg8 = 0;
+				ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+							AX88179A_BFM_DATA, 1, 1, &reg8);
+				ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+							AX_MEDIUM_STATUS_MODE, 1, 1, &reg8);
+			}
+#endif			
 #ifdef ENABLE_TX_TASKLET
 			tasklet_disable(&axdev->tx_tl);
 #endif

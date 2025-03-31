@@ -286,8 +286,12 @@ static int ax88179a_set_wol_get_ts_info
 
 	info->tx_types = BIT(HWTSTAMP_TX_OFF) |
 			 BIT(HWTSTAMP_TX_ON) |
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
 			 BIT(HWTSTAMP_TX_ONESTEP_SYNC) |
 			 BIT(HWTSTAMP_TX_ONESTEP_P2P);
+#else
+			 BIT(HWTSTAMP_TX_ONESTEP_SYNC);
+#endif
 
 	info->rx_filters = BIT(HWTSTAMP_FILTER_NONE) |
 			   BIT(HWTSTAMP_FILTER_PTP_V1_L4_EVENT) |
@@ -1175,7 +1179,8 @@ void ax88179a_set_multicast(struct net_device *netdev)
 	mc_count = netdev_mc_count(netdev);
 #endif
 
-	axdev->rxctl = (AX_RX_CTL_START | AX_RX_CTL_AB);
+	axdev->rxctl = (AX_RX_CTL_START | AX_RX_CTL_AB 
+				   | ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0));
 #ifdef ENABLE_AX88279
 	if (axdev->chip_version == AX_VERSION_AX88279)
 		axdev->rxctl |= AX_RX_CTL_DROPCRCERR;
@@ -1235,6 +1240,7 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 		if (ret < 0)
 			return ret;
 		axdev->chip_pin = reg32 & 0x03;
+		axdev->ipalign = 0;
 	}
 #endif
 	ret = ax88179a_set_phy_power(axdev, true);
@@ -1249,12 +1255,9 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 		reg16 &= ~(ADVERTISE_10FULL | ADVERTISE_10HALF);
 		ax_mdio_write(axdev->netdev, axdev->mii.phy_id, MII_ADVERTISE,
 			      (reg16 | ADVERTISE_RESV));
-		reg16 = ax_mdio_read(axdev->netdev, axdev->mii.phy_id,
-				     MII_CTRL1000);
-		ax_mdio_write(axdev->netdev, axdev->mii.phy_id, MII_CTRL1000,
-			      (reg16 | CTL1000_AS_MASTER));
 		ax_mdio_write(axdev->netdev, axdev->mii.phy_id, 0,
 			      (BMCR_ANRESTART | BMCR_ANENABLE));
+		axdev->ipalign = 1;
 	}
 #endif
 	ret = ax88179a_autodetach(axdev);
@@ -1352,7 +1355,7 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 		return ret;
 
 	reg16 = AX_RX_CTL_START | AX_RX_CTL_AP | AX_RX_CTL_AMALL |
-		AX_RX_CTL_AB | AX_RX_CTL_DROPCRCERR;
+		AX_RX_CTL_AB | AX_RX_CTL_DROPCRCERR | ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
 	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_RX_CTL, 1, 1, &reg16);
 	if (ret < 0)
 		return ret;
@@ -1604,7 +1607,8 @@ static int ax88179a_link_setting(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
-	axdev->rxctl |= AX_RX_CTL_START | AX_RX_CTL_AB;
+	axdev->rxctl |= AX_RX_CTL_START | AX_RX_CTL_AB 
+					| ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL,
 				2, 2, &axdev->rxctl);
 	if (ret < 0)
@@ -2209,7 +2213,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 				goto find_next_rx;
 		}
 
-		pkt_len = (u32)(pkt_hdr->length & 0x7FFF);
+		pkt_len = (u32)(pkt_hdr->length & 0x7FFF) - ((axdev->ipalign) ? 2 : 0);
 
 #ifdef ENABLE_RX_TASKLET
 		skb = netdev_alloc_skb(netdev, pkt_len);
@@ -2222,7 +2226,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 		}
 
 		skb_put(skb, pkt_len);
-		memcpy(skb->data, rx_data, pkt_len);
+		memcpy(skb->data, rx_data + ((axdev->ipalign) ? 2 : 0), pkt_len);
 		ax88179a_rx_checksum(skb, pkt_hdr);
 
 		skb->truesize = skb->len + sizeof(struct sk_buff);
@@ -2525,11 +2529,16 @@ static int ax88179a_runtime_resume(struct ax_device *axdev)
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_SWP_CTRL,
 			  1, 1, &reg8);
 
-	reg16 = AX_RX_CTL_START | AX_RX_CTL_AB;
+	reg16 = AX_RX_CTL_START | AX_RX_CTL_AB | ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
 
 	reg8 = AX_MAC_RX_PATH_READY | AX_MAC_TX_PATH_READY;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH, 1, 1, &reg8);
+
+	ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
+	reg8 &= 0xE0;
+	reg8 |= AX_MONITOR_MODE_RWMP;
+	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 
 	if (link_info->eth_speed == ETHER_LINK_1000)
 		medium_mode |= AX_MEDIUM_GIGAMODE;

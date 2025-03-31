@@ -579,9 +579,6 @@ static int ax88179_LED_setting(struct ax_device *axdev)
 			ax_read_cmd(axdev, AX_ACCESS_MAC, AX_SROM_CMD,
 					 1, 1, &value, 0);
 
-			ax_read_cmd(axdev, AX_ACCESS_MAC, AX_SROM_CMD,
-					 1, 1, &value, 0);
-
 			if (time_after(jiffies, (jiffies + delay)))
 				return -EINVAL;
 		} while (value & EEP_BUSY);

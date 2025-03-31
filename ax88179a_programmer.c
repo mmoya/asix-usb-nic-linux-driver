@@ -474,7 +474,7 @@ static int read_serial_number(struct ax_command_info *info, unsigned char *seria
 
         if (efuse[i].ef_data.type04.type.type == EF_TYPE_04) {
             memcpy(serial_number, efuse[i].ef_data.type04.serial, sizeof(efuse[i].ef_data.type04.serial));
-            serial_number[sizeof(efuse[i].ef_data.type04.serial)] = '\0';
+            serial_number[sizeof(efuse[i].ef_data.type04.serial) - 1] = '\0';
             return SUCCESS;
         }
     }

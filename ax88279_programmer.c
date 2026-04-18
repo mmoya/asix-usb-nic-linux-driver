@@ -23,14 +23,28 @@
 #include <net/if.h>
 #include <getopt.h>
 #include <endian.h>
+#include <stdbool.h>
+#include <time.h>
 #if NET_INTERFACE == INTERFACE_SCAN
 #include <ifaddrs.h>
 #endif
 #include "ax_ioctl.h"
 #ifdef ENABLE_IOCTL_DEBUG
 #define NOT_PROGRAM
+#define DEBUG_PRINT(fmt, args...) do {		\
+	struct timespec ts;						\
+	clock_gettime(CLOCK_MONOTONIC, &ts);	\
+	printf("[%5ld.%06ld] " fmt,				\
+		ts.tv_sec, ts.tv_nsec / 1000,		\
+		## args);							\
+} while (0)
+#else
+#define DEBUG_PRINT(fmt, args...)
 #endif
-#define RELOAD_DELAY_TIME	10	// sec
+#define RELOAD_DELAY_TIME			(1000 * 1000)
+#define FLASH_DELAY_TIME			(10 * 1000)
+#define INFE_MAX_NUM 				255
+#define DEV_DESC_SIZE				sizeof(struct _ax_dev_desc)
 
 #define PRINT_IOCTL_FAIL(ret) \
 fprintf(stderr, "%s: ioctl failed. (err: %d)\n", __func__, ret)
@@ -39,55 +53,63 @@ fprintf(stderr, "%s: Scaning device failed.\n", __func__)
 #define PRINT_ALLCATE_MEM_FAIL \
 fprintf(stderr, "%s: Fail to allocate memory.\n", __func__)
 #define PRINT_LOAD_FILE_FAIL \
-fprintf(stderr, "%s: Read file failed.\n", __func__)
+fprintf(stderr, "%s: Load file failed.\n", __func__)
 
-#define AX88179A_IOCTL_VERSION \
-"AX88279 Linux Flash Programming Tool v1.0.0 beat1"
+#define AX88279A_IOCTL_VERSION \
+"AX88279A/AX88279 Linux Flash Programming Tool v1.0.0"
 
 const char help_str1[] =
-"./ax88279_programmer help [command]\n"
+"./ax88279a_279_programmer help [command]\n"
 "    -- command description\n";
 const char help_str2[] =
 "        [command] - Display usage of specified command\n";
 
 const char readverion_str1[] =
-"./ax88279_programmer rversion\n"
-"    -- AX88279 Read Firmware Verion\n";
+"./ax88279a_279_programmer rversion\n"
+"    -- AX88279A_279 Read Firmware Verion\n";
 static const char readverion_str2[] = "";
 
 const char readmac_str1[] =
-"./ax88279_programmer rmacaddr\n"
-"    -- AX88279 Read MAC Address\n";
+"./ax88279a_279_programmer rmacaddr\n"
+"    -- AX88279A_279 Read MAC Address\n";
 static const char readmac_str2[] = "";
 
 const char writeflash_str1[] =
-"./ax88279_programmer wflash [file]\n"
-"    -- AX88279 Write Flash\n";
+"./ax88279a_279_programmer wflash -f [file] -p [device]\n"
+"    -- AX88279A_279 Write Flash\n";
 const char writeflash_str2[] =
-"        [file]    - Flash file path\n";
+"        -f [file]    - Flash file path\n"
+"        -p [device]  - Device: \"AX88279\" or \"AX88279A\"\n";
 
 const char writeparameter_str1[] =
-"./ax88279_programmer wpara -m [MAC] -s [SN] -p [PID] -v [VID] -P [PS] -M [MN] -D [dump]\n"
-"                           -S [SS] -H [HS] -w [wol] -l [led0 value] -e [led1 value] -d [led2 value]\n"
-"    -- AX88279 Write Parameter\n";
+"./ax88279a_279_programmer wpara -m [MAC] -s [SN] -i [PID] -v [VID]\n"
+"                                -n [PS] -M [MN] -D [dump] -S [SS] -H [HS] -w [wol]\n"
+"                                -l [led0 value] -e [led1 value] -d [led2 value] -p [device]\n"
+"    -- AX88279A_279 Write Parameter\n";
 const char writeparameter_str2[] =
 "        -m [MAC]   	 - MAC address (XX:XX:XX:XX:XX:XX) X:'0'-'F'\n"
 "        -s [SN]    	 - Serial Number (Characters must be less than 19 bytes) X:'0'-'F'\n"
-"        -p [PID]   	 - Product ID (XX:XX) X:'0'-'F'\n"
+"        -i [PID]   	 - Product ID (XX:XX) X:'0'-'F'\n"
 "        -v [VID]   	 - Vendor ID (XX:XX) X:'0'-'F'\n"
-"        -P [PS]    	 - Product String (Characters must be less than 19 bytes)\n"
+"        -n [PS]    	 - Product String (Characters must be less than 19 bytes)\n"
 "        -M [MN]    	 - Manufacture Name (Characters must be less than 19 bytes)\n"
-"        -D [dump]	 - The parameter content currently in flash (dump)\n"
+"        -D [dump]     	 - The parameter content currently in flash (dump)\n"
 "        -S [SS]    	 - SS bus power (XX) X:0-896\n"
 "        -H [HS]    	 - HS bus power (XX) X:0-500\n"
 "        -w [wol]    	 - wake on LAN (XXXXXXXX) X:digit\n"
-"        -l [led0 value]	 - value: control_blink (XXXX_XXXX)\n"
-"        -e [led1 value]	 - value: control_blink (XXXX_XXXX)\n";
+"        -l [led0 value]  - value: control_blink (XXXX_XXXX)\n"
+"        -e [led1 value]  - value: control_blink (XXXX_XXXX)\n"
+"        -p [device]  	 - Device: \"AX88279\" or \"AX88279A\"\n";
 
 const char reload_str1[] =
-"./ax88279_programmer reload\n"
-"    -- AX88279 Reload\n";
+"./ax88279a_279_programmer reload\n"
+"    -- AX88279A_279 Reload\n";
 static const char reload_str2[] = "";
+
+const char erase_str1[] =
+""
+"";
+static const char erase_str2[] = "";
 
 static int help_func(struct ax_command_info *info);
 static int readversion_func(struct ax_command_info *info);
@@ -95,7 +117,10 @@ static int readmac_func(struct ax_command_info *info);
 static int writeflash_func(struct ax_command_info *info);
 static int writeparameter_func(struct ax_command_info *info);
 static int reload_func(struct ax_command_info *info);
+static int erase_parm_func(struct ax_command_info *info);
 static int scan_ax_device(struct ifreq *ifr, int inet_sock);
+static int scan_ax_multi_device(struct ifreq *ifr, int inet_sock, 
+	struct ifreq **ifr_list, unsigned int *infe_num);
 
 struct _command_list ax88279_cmd_list[] = {
 	{
@@ -128,7 +153,7 @@ struct _command_list ax88279_cmd_list[] = {
 	},
 	{
 		"wpara",
-		AX88179A_PROGRAM_EFUSE,
+		~0,
 		writeparameter_func,
 		writeparameter_str1,
 		writeparameter_str2
@@ -139,6 +164,13 @@ struct _command_list ax88279_cmd_list[] = {
 		reload_func,
 		reload_str1,
 		reload_str2
+	},
+	{
+		"erase",
+		~0,
+		erase_parm_func,
+		erase_str1,
+		erase_str2
 	},
 	{
 		NULL,
@@ -179,6 +211,7 @@ struct __wpara {
 	char *wol;
 	char *led0;
 	char *led1;
+	char *device;
 	unsigned int iss_bus;
 	unsigned int ihs_bus;	
 	unsigned int MAC[6];
@@ -190,64 +223,158 @@ struct __wpara {
 	unsigned int hsbus[1];
 };
 
-static unsigned char sample_type1[] = {
- 0x01, 0x0B, 0x95, 0x17,
- 0x90, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x01, 0x04,
- 0x00, 0x0A, 0x07, 0xFF,
- 0x39, 0xE1, 0x20, 0x00
+struct sample_type_entry {
+	unsigned char data[FLASH_BLOCK_SIZE];
 };
 
-static unsigned char sample_type2[] = {
- 0x02, 0x41, 0x53, 0x49,
- 0x58, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00
+enum product_type {
+	product_ax88279		= 0,
+	product_ax88279a 	= 1,
+	product_max
 };
 
-static unsigned char sample_type3[] = {
- 0x03, 0x41, 0x58, 0x38,
- 0x38, 0x32, 0x37, 0x39,
- 0x41, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00
+struct sample_types {
+	struct sample_type_entry type01[product_max];
+	struct sample_type_entry type02[product_max];
+	struct sample_type_entry type03[product_max];
+	struct sample_type_entry type04[product_max];
+	struct sample_type_entry type11[product_max];
+	struct sample_type_entry type15[product_max];
 };
 
-static unsigned char sample_type4[] = {
- 0x04, 0x30, 0x30, 0x30,
- 0x30, 0x30, 0x30, 0x30,
- 0x31, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00
-};
-
-static unsigned char sample_type11[] = {
- 0x0B, 0x1F, 0x00, 0x00,
- 0x00, 0x00, 0x1F, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x00, 0x00,
- 0x00, 0x00, 0x45, 0x0B
-};
-
-static unsigned char sample_type15[] = {
- 0x0F, 0x7D, 0x01, 0x63,
- 0x81, 0x7F, 0x7F, 0x5F,
- 0x5D, 0x2F, 0x07, 0xE8,
- 0x04, 0x7D, 0x00, 0xC8,
- 0x08, 0x01, 0x04, 0x00
+static const struct sample_types sample_type = {
+	.type01 = {
+		[product_ax88279] = {
+			.data = {
+				0x01, 0x0B, 0x95, 0x17,
+				0x90, 0x00, 0x0E, 0xC6,
+				0x81, 0x79, 0x01, 0x04,
+				0x00, 0x0A, 0x07, 0xFF,
+				0x39, 0xE1, 0x20, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+				0x01, 0x95, 0x0B, 0x90,
+				0x17, 0x00, 0x0E, 0xC6,
+				0x81, 0x79, 0x01, 0x00,
+				0x05, 0x0A, 0xFF, 0x07,
+				0x70, 0xFA, 0x20, 0x00
+			}
+		},
+	},
+	.type02 = {
+		[product_ax88279] = {
+			.data = {
+				0x02, 0x41, 0x53, 0x49,
+				0x58, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+				0x02, 0x41, 0x53, 0x49,
+				0x58, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+	},
+	.type03 = {
+		[product_ax88279] = {
+			.data = {
+				0x03, 0x41, 0x58, 0x38,
+				0x38, 0x32, 0x37, 0x39,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+				0x03, 0x41, 0x58, 0x38,
+				0x38, 0x32, 0x37, 0x39,
+				0x41, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+	},
+	.type04 = {
+		[product_ax88279] = {
+			.data = {
+				0x04, 0x30, 0x30, 0x30,
+				0x30, 0x30, 0x30, 0x30,
+				0x31, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+	 			0x04, 0x30, 0x30, 0x30,
+				0x30, 0x30, 0x30, 0x30,
+				0x31, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+	},
+	.type11 = {
+		[product_ax88279] = {
+			.data = {
+				0x0B, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+				0x0B, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00
+			}
+		},
+	},
+	.type15 = {
+		[product_ax88279] = {
+			.data = {
+				0x0F, 0x61, 0x01, 0x63,
+				0x81, 0x00, 0x00, 0x5F,
+				0x5D, 0x2F, 0x07, 0xE8,
+				0x04, 0x7D, 0x00, 0xC8,
+				0x08, 0x01, 0x04, 0x00
+			}
+		},
+		[product_ax88279a] = {
+			.data = {
+				0x0F, 0x01, 0x01, 0x63,
+				0x01, 0x00, 0x00, 0x5F,
+				0x5D, 0x2F, 0xE8, 0x07,
+				0x7D, 0x04, 0xC8, 0x00,
+				0x08, 0x01, 0x08, 0x00
+			}
+		},
+	},
 };
 
 #pragma pack(push)
 #pragma pack(1)
 enum Para_Type_Def {
-	TYPE_REV = 0x00,
-	TYPE_01 = 0x01,
-	TYPE_02 = 0x02,
-	TYPE_03 = 0x03,
-	TYPE_04 = 0x04,
-	TYPE_11 = 0x0B,
-	TYPE_15 = 0x0F,
+	TYPE_REV 	= 0x00,
+	TYPE_01 	= 0x01,
+	TYPE_02 	= 0x02,
+	TYPE_03 	= 0x03,
+	TYPE_04 	= 0x04,
+	TYPE_11 	= 0x0B,
+	TYPE_15 	= 0x0F,
 };
 struct _ef_type {
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -380,6 +507,70 @@ static int help_func(struct ax_command_info *info)
 	return SUCCESS;
 }
 
+static int get_dev_desc(struct ax_command_info *info, 
+						struct _ax_dev_desc* ax_dev_desc)
+{
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct _ax_ioctl_command ioctl_cmd;
+	int ret;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	ioctl_cmd.ioctl_cmd = AX88179A_GET_DEV_DESC;
+
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+
+	ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
+	if (ret < 0) {
+		PRINT_IOCTL_FAIL(ret);
+		return -FAIL_IOCTL;
+	}
+	memcpy(ax_dev_desc, &ioctl_cmd.ax_dev_desc, DEV_DESC_SIZE);
+
+	return SUCCESS;
+}
+
+static int __check_dev_name(struct ax_command_info *info, 
+							char* dev_name, int* product_num) 
+{
+	unsigned int product_id;
+	struct _ax_dev_desc ax_dev_desc;
+
+	/*Get product BCD ID*/
+	get_dev_desc(info, &ax_dev_desc);
+	DEBUG_PRINT("=== %s device description: 0x%04x\n", 
+				__func__, ax_dev_desc.bcd_id);
+
+	if (ax_dev_desc.bcd_id == 0x0400 && !strcasecmp(dev_name, "AX88279")) {
+		*product_num = product_ax88279;
+		return SUCCESS;
+	} else if (ax_dev_desc.bcd_id == 0x0500 && !strcasecmp(dev_name, "AX88279A")) {
+		*product_num = product_ax88279a;
+		return SUCCESS;
+	}
+
+	fprintf(stderr, "%s, Fail: Device name incorrect.\n", __func__);
+
+	return -FAIL_IVALID_VALUE;
+}
+
+static int print_msg(char *cmd)
+{
+	int i;
+
+	printf("\n");
+	for (i = 0; ax88279_cmd_list[i].cmd != NULL; i++) {
+		if (strncmp(cmd, ax88279_cmd_list[i].cmd,
+				strlen(ax88279_cmd_list[i].cmd)) == 0) {
+			printf("%s%s\n", ax88279_cmd_list[i].help_ins,
+				ax88279_cmd_list[i].help_desc);
+			return -FAIL_INVALID_PARAMETER;
+		}
+	}
+}
+
 static int autosuspend_enable(struct ax_command_info *info,
 			      unsigned char enable)
 {
@@ -392,7 +583,7 @@ static int autosuspend_enable(struct ax_command_info *info,
 	ioctl_cmd.ioctl_cmd = AX88179A_AUTOSUSPEND_EN;
 
 	ioctl_cmd.autosuspend.enable = enable;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -414,8 +605,8 @@ static int read_version(struct ax_command_info *info, char *version)
 
 	ioctl_cmd.ioctl_cmd = AX88179A_READ_VERSION;
 
-	memset(ioctl_cmd.version.version, 0, 16);
-
+	memset(ioctl_cmd.version.version, 0, 32);
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -424,9 +615,9 @@ static int read_version(struct ax_command_info *info, char *version)
 		return -FAIL_IOCTL;
 	}
 
-	memcpy(version, ioctl_cmd.version.version, 16);
+	memcpy(version, ioctl_cmd.version.version, 32);
 
-	return SUCCESS;
+	return (ret >= 0) ? SUCCESS : ret;
 }
 
 static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
@@ -435,12 +626,6 @@ static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
 	int ret;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
-
-	ret = scan_ax_device(ifr, info->inet_sock);
-	if (ret < 0) {
-		PRINT_SCAN_DEV_FAIL;
-		return ret;
-	}
 
 	ifr->ifr_flags &= 0;
 	ret = ioctl(info->inet_sock, SIOCSIFFLAGS, ifr);
@@ -473,8 +658,11 @@ static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
 
 static int readversion_func(struct ax_command_info *info)
 {
-	char version[16] = {0};
+	char version[32] = {0};
 	int i, ret;
+	unsigned int dev_cnt = 0, dev_num;
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -488,22 +676,43 @@ static int readversion_func(struct ax_command_info *info)
 			}
 		}
 	}
+	
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
 
-	ret = scan_ax_device(info->ifr, info->inet_sock);
-    if (ret < 0) {
-            PRINT_SCAN_DEV_FAIL;
-            return ret;
-    }
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
+		PRINT_SCAN_DEV_FAIL;
+		goto out;
+	}
 
-	autosuspend_enable(info, 0);
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		autosuspend_enable(info, 0);
 
-	ret = read_version(info, version);
-	if (ret == SUCCESS)
-		printf("Firmware Version: %s\n", version);
+		ret = read_version(info, version);
+		if (ret == SUCCESS)
+			printf("%s Firmware Version: %s\n", 
+				info->ifr->ifr_name, version);
 
-	usleep(20000);
+		usleep(20000);
 
-	autosuspend_enable(info, 1);
+		autosuspend_enable(info, 1);
+	}
+
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
 
 	return ret;
 }
@@ -512,6 +721,9 @@ static int readmac_func(struct ax_command_info *info)
 {
 	unsigned char mac[6] = {0};
 	int i, ret;
+	unsigned int dev_cnt = 0, dev_num;
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -526,15 +738,42 @@ static int readmac_func(struct ax_command_info *info)
 		}
 	}
 
-	ret = read_mac_address(info, mac);
-	if (ret == SUCCESS)
-		printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-			mac[0],
-			mac[1],
-			mac[2],
-			mac[3],
-			mac[4],
-			mac[5]);
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
+	
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
+		PRINT_SCAN_DEV_FAIL;
+		goto out;
+	}
+
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		ret = read_mac_address(info, mac);
+		if (ret == SUCCESS)
+			printf("%s MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+				info->ifr->ifr_name,
+				mac[0],
+				mac[1],
+				mac[2],
+				mac[3],
+				mac[4],
+				mac[5]);
+	}
+
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
 
 	return ret;
 }
@@ -553,16 +792,18 @@ static int write_flash(struct ax_command_info *info, unsigned char *data,
 	ioctl_cmd.flash.offset = offset;
 	ioctl_cmd.flash.length = len;
 	ioctl_cmd.flash.buf = data;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
 	if (ret < 0) {
 		if (ioctl_cmd.flash.status)
-			fprintf(stderr, "FLASH WRITE status: %d",
+			fprintf(stderr, "FLASH WRITE status: %d\n",
 				ioctl_cmd.flash.status);
 		PRINT_IOCTL_FAIL(ret);
 		return ret;
 	}
+	usleep(FLASH_DELAY_TIME);
 
 	return SUCCESS;
 }
@@ -581,12 +822,13 @@ static int read_flash(struct ax_command_info *info, unsigned char *data,
 	ioctl_cmd.flash.offset = offset;
 	ioctl_cmd.flash.length = len;
 	ioctl_cmd.flash.buf = data;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
 	if (ret < 0) {
 		if (ioctl_cmd.flash.status)
-			fprintf(stderr, "FLASH READ status: %d",
+			fprintf(stderr, "FLASH READ status: %d\n",
 				ioctl_cmd.flash.status);
 		PRINT_IOCTL_FAIL(ret);
 		return -FAIL_IOCTL;
@@ -605,7 +847,7 @@ static int erase_flash(struct ax_command_info *info)
 
 	ioctl_cmd.ioctl_cmd = AX88179A_ERASE_FLASH;
 	ioctl_cmd.flash.status = 0;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -613,6 +855,7 @@ static int erase_flash(struct ax_command_info *info)
 		PRINT_IOCTL_FAIL(ret);
 		return -FAIL_IOCTL;
 	}
+	usleep(FLASH_DELAY_TIME);
 
 	return SUCCESS;
 }
@@ -629,6 +872,7 @@ static int erase_sector_flash(struct ax_command_info *info, int offset)
 	ioctl_cmd.ioctl_cmd = AX88179A_ERASE_SECTOR_FLASH;
 	ioctl_cmd.flash.status = 0;
 	ioctl_cmd.flash.offset = offset;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -636,6 +880,7 @@ static int erase_sector_flash(struct ax_command_info *info, int offset)
 		PRINT_IOCTL_FAIL(ret);
 		return -FAIL_IOCTL;
 	}
+	usleep(FLASH_DELAY_TIME);
 
 	return SUCCESS;
 }
@@ -648,6 +893,7 @@ static int boot_to_rom(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	ioctl_cmd.ioctl_cmd = AX88179A_ROOT_2_ROM;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	ioctl(info->inet_sock, AX_PRIVATE, ifr);
 
@@ -662,10 +908,11 @@ static int sw_reset(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	ioctl_cmd.ioctl_cmd = AX88179A_SW_RESET;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	ioctl(info->inet_sock, AX_PRIVATE, ifr);
 
-	usleep(RELOAD_DELAY_TIME * 100000);
+	usleep(RELOAD_DELAY_TIME);
 
 	return SUCCESS;
 }
@@ -691,11 +938,34 @@ static int find_offest_max_index(int *offset_arr, int size)
 
 	for (i = 1; i < size; i++) {
 		if (offset_arr[i] >= max) {
-				max = i;
+			max = i;
 		}
 	}
 
 	return max;
+}
+
+static int dump_flash(unsigned char* buf, unsigned int size, 
+						char* file_name) {
+	int i;
+	FILE *file = fopen(file_name, "w");
+	
+	if (file == NULL) {
+		perror("Error opening file");
+		return -FAIL_INVALID_PARAMETER;
+	}
+
+	for (i = 0; i < size; i++) {
+		fprintf(file, "%02X", buf[i]);
+
+		if (((i + 1) % 4 == 0))
+			fprintf(file, "\n");
+		else
+			fprintf(file, " ");
+	}
+	fclose(file);
+	
+	return 0;
 }
 
 static int writeflash_func(struct ax_command_info *info)
@@ -703,22 +973,53 @@ static int writeflash_func(struct ax_command_info *info)
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
 	unsigned char *rbuf = NULL, *filebuf = NULL, *cmpbuf = NULL;
 	FILE *pFile = NULL;
-	unsigned int ret, para_pri_offset, para_pri_length, file_length;
+	unsigned int ret, header_sig_offset, file_length;
+	unsigned int para_pri_offset, para_pri_length;
 	unsigned int para_sec_offset, para_sec_length, result, i;
-
+	unsigned int header_offset, header_len;
+	int c, oi = -1;
+	int product_num = 0;
+	char* file_path = NULL;
+	char* product_name = NULL;
+	bool get_dev_name = false;
+	bool set_para_pri_flag = true;
+	bool set_para_sec_flag = true;
+	
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	printf("Please wait until SUCCESS or FAIL occurs\n");
+	printf("[INFO] Please wait until SUCCESS or FAIL occurs\n");
 
-	if (info->argc != 3) {
-		for (i = 0; ax88279_cmd_list[i].cmd != NULL; i++) {
-			if (strncmp(info->argv[1], ax88279_cmd_list[i].cmd,
-				    strlen(ax88279_cmd_list[i].cmd)) == 0) {
-				printf("%s%s\n", ax88279_cmd_list[i].help_ins,
-				       ax88279_cmd_list[i].help_desc);
-				return -FAIL_INVALID_PARAMETER;
-			}
+	while ((c = getopt_long(info->argc, info->argv, "f:p:",
+				long_options, &oi)) != -1) {
+		switch (c) {
+		case 'f':
+			file_path = optarg;
+			DEBUG_PRINT("%s \r\n", file_path);
+			break;
+		case 'p':
+			product_name = optarg; 
+			DEBUG_PRINT("%s \r\n", product_name);
+			if (__check_dev_name(info, product_name, &product_num))
+				return print_msg("wflash");
+			get_dev_name = true;
+			break;
+		case '?':
+		default:
+			return -FAIL_INVALID_PARAMETER;
 		}
+	}
+
+	if (!file_path || get_dev_name == false)
+		return print_msg("wflash");
+
+	if (product_num == product_ax88279) {
+		header_sig_offset = AX88279_HEADER_SIG_OFFSET;
+		header_offset = AX88279_HEADER_OFFSET;
+		header_len = AX88279_PARM_HEADER_LEN;
+	} else if (product_num == product_ax88279a) {
+		header_sig_offset = AX88279A_HEADER_SIG_OFFSET;
+		header_offset = SWAP_16(AX88279_HEADER_OFFSET);
+		header_len = AX88279A_PARM_HEADER_LEN;
 	}
 
 	ret = scan_ax_device(ifr, info->inet_sock);
@@ -728,30 +1029,38 @@ static int writeflash_func(struct ax_command_info *info)
 	}
 
 	/* Read the file of FW */
-	pFile = fopen(info->argv[2], "rb");
+	pFile = fopen(file_path, "rb");
 	if (pFile == NULL) {
 		fprintf(stderr, "%s: Fail to open %s file.\n",
-			__func__, info->argv[2]);
+			__func__, file_path);
 		ret = -FAIL_LOAD_FILE;
-		goto fail;
+		goto out;
 	}
 
 	fseek(pFile, 0, SEEK_END);
 	file_length = ftell(pFile);
 	fseek(pFile, 0, SEEK_SET);
 
-	filebuf = (unsigned char *)malloc(file_length);
+	filebuf = (unsigned char *)malloc(MEM_SIZE);
 	if (!filebuf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		ret = -FAIL_ALLCATE_MEM;
-		goto fail;
+		goto out;
 	}
+	memset(filebuf, 0, MEM_SIZE);
 
 	result = fread(filebuf, 1, file_length, pFile);
 	if (result != file_length) {
 		PRINT_LOAD_FILE_FAIL;
 		ret = -PRINT_LOAD_FILE_FAIL;
-		goto fail;
+		goto out;
+	}
+
+	if (*(unsigned short *)&filebuf[header_sig_offset] != header_offset) {
+		PRINT_LOAD_FILE_FAIL;
+		fprintf(stderr, "The firmware is incompatible.\n");
+		ret = -PRINT_LOAD_FILE_FAIL;
+		goto out;
 	}
 
 	/* Original data of parameter on flash  */
@@ -759,32 +1068,66 @@ static int writeflash_func(struct ax_command_info *info)
 	if (!rbuf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		ret = -FAIL_ALLCATE_MEM;
-		goto fail;
+		goto out;
 	}
 	memset(rbuf, 0, MEM_SIZE);
 
 	ret = read_flash(info, rbuf, 0, MEM_SIZE);
 	if (ret < 0)
-		goto fail;
+		goto out;
+	if (*(unsigned short *)&rbuf[PARAMETER_PRI_HEADER_OFFSET] != 
+		header_offset) 
+		set_para_pri_flag = false;
 
-	para_pri_offset = SWAP_32(*(unsigned long *)&rbuf[PARAMETER_PRI_OFFSET]);
-	para_pri_length = 20 * SWAP_16(*(unsigned short *)&rbuf[PARAMETER_PRI_BLOCK_COUNT]);
+	if (*(unsigned short *)&rbuf[PARAMETER_SEC_HEADER_OFFSET] != 
+		header_offset || product_num == product_ax88279a)
+		set_para_sec_flag = false;
 
-	para_sec_offset = SWAP_32(*(unsigned long *)&rbuf[PARAMETER_SEC_OFFSET]);
-	para_sec_length = 20 * SWAP_16(*(unsigned short *)&rbuf[PARAMETER_SEC_BLOCK_COUNT]);
+	if (product_num == product_ax88279) {
+		if (set_para_pri_flag) {
+			para_pri_offset = 
+				SWAP_32(*(unsigned long *)&rbuf[PARAMETER_PRI_OFFSET]);
+			para_pri_length = 
+				FLASH_BLOCK_SIZE * 
+				SWAP_16(*(unsigned short *)&rbuf[PARAMETER_PRI_BLOCK_COUNT]);
+		}
+		if (set_para_sec_flag) {
+			para_sec_offset = 
+				SWAP_32(*(unsigned long *)&rbuf[PARAMETER_SEC_OFFSET]);
+			para_sec_length =
+				FLASH_BLOCK_SIZE * 
+				SWAP_16(*(unsigned short *)&rbuf[PARAMETER_SEC_BLOCK_COUNT]);
+		}
+	} else if (product_num == product_ax88279a) {
+		if (set_para_pri_flag) {
+			para_pri_offset = 
+				*(unsigned long *)&rbuf[PARAMETER_PRI_OFFSET];
+			para_pri_length = 
+				FLASH_BLOCK_SIZE * 
+				*(unsigned short *)&rbuf[PARAMETER_PRI_BLOCK_COUNT];
+		}
+	}
 
-	for (i = 0; i < 0x18; i++)
-		filebuf[PARAMETER_PRI_HEADER_OFFSET + i] = rbuf[PARAMETER_PRI_HEADER_OFFSET + i];	
+	for (i = 0; i < header_len; i++)
+		filebuf[PARAMETER_PRI_HEADER_OFFSET + i] = 
+			rbuf[PARAMETER_PRI_HEADER_OFFSET + i];
 
-	for (i = 0; i < para_pri_length; i++)
-		filebuf[para_pri_offset + i] = rbuf[para_pri_offset + i];	
+	if (set_para_pri_flag)
+		for (i = 0; i < para_pri_length; i++)
+			filebuf[para_pri_offset + i] = rbuf[para_pri_offset + i];
 
-	for (i = 0; i < para_sec_length; i++)
-		filebuf[para_sec_offset + i] = rbuf[para_sec_offset + i];	
+	if (set_para_sec_flag)
+		for (i = 0; i < para_sec_length; i++)
+			filebuf[para_sec_offset + i] = rbuf[para_sec_offset + i];
 
 	/* Write back the local filebuf to flash */
-	erase_flash(info);
-
+	printf("[INFO] Erasing flash\n");
+	ret = erase_flash(info);
+	if (ret < 0) {
+		fprintf(stderr, "Fail to erase updated flash\n");
+		goto fail;
+	}
+	printf("[INFO] Writing flash\n");
 	ret = write_flash(info, filebuf, 0, MEM_SIZE);
 	if (ret < 0) {
 		fprintf(stderr, "Fail to write updated FW1 header\n");
@@ -792,6 +1135,7 @@ static int writeflash_func(struct ax_command_info *info)
 	}
 
 	/* Compare the header of parameter */
+	printf("[INFO] Checking flash data\n");
 	cmpbuf = (unsigned char *)malloc(MEM_SIZE);
 	if (!cmpbuf) {
 		PRINT_ALLCATE_MEM_FAIL;
@@ -803,34 +1147,37 @@ static int writeflash_func(struct ax_command_info *info)
 	if (ret < 0)
 		goto fail;
 
-	if (memcmp(&cmpbuf[PARAMETER_PRI_HEADER_OFFSET], 
-			   &filebuf[PARAMETER_PRI_HEADER_OFFSET], 0x18) != 0) {
+	if (memcmp(&cmpbuf[PARAMETER_PRI_HEADER_OFFSET],
+			   &filebuf[PARAMETER_PRI_HEADER_OFFSET], header_len) != 0) {
 		fprintf(stderr, "%s: Compare parameter header failed.\n", __func__);
 		ret = -FAIL_FLASH_WRITE;
 		goto fail;
 	}
 
 	/* Compare the data of parameter */
-	if (memcmp(&cmpbuf[para_pri_offset], 
+	if (set_para_pri_flag &&
+		memcmp(&cmpbuf[para_pri_offset], 
 			   &filebuf[para_pri_offset], para_pri_length) != 0) {
 		fprintf(stderr, "%s: Compare parameter pri failed.\n", __func__);
 		ret = -FAIL_FLASH_WRITE;
 		goto fail;
 	}
 
-	if (memcmp(&cmpbuf[para_sec_offset], 
+	if (set_para_sec_flag &&
+		memcmp(&cmpbuf[para_sec_offset], 
 			   &filebuf[para_sec_offset], para_sec_length) != 0) {
 		fprintf(stderr, "%s: Compare parameter sec failed.\n", __func__);
 		ret = -FAIL_FLASH_WRITE;
 		goto fail;
 	}
+	sw_reset(info);
 
 	ret = SUCCESS;
 	goto out;
 
 fail:
+	printf("FAIL: Programing flash fail\n");
 	erase_flash(info);
-	printf("FAIL\n");
 out:
 	if (rbuf)
 		free(rbuf);
@@ -863,49 +1210,37 @@ static unsigned short header_check_calc(unsigned char *fw1_header)
     return (unsigned short)Sum;
 }
 
-static int print_msg(char *cmd)
-{
-	int i;
-
-	printf("\n");
-	for (i = 0; ax88279_cmd_list[i].cmd != NULL; i++) {
-		if (strncmp(cmd, ax88279_cmd_list[i].cmd,
-				strlen(ax88279_cmd_list[i].cmd)) == 0) {
-			printf("%s%s\n", ax88279_cmd_list[i].help_ins,
-				ax88279_cmd_list[i].help_desc);
-			return -FAIL_INVALID_PARAMETER;
-		}
-	}
-}
-
-static int find_block_index(unsigned char *rpara_databuf, int para_size
-							, enum Para_Type_Def type)
+static int find_block_index(unsigned char *rpara_databuf, int para_size, 
+				enum Para_Type_Def type)
 {
 	int i = 0;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 0; i < para_size; i += 20) {
+	for (i = 0; i < para_size; i += FLASH_BLOCK_SIZE) {
 		if ((rpara_databuf[i] & 0x0F) == type)
-			return i / 20;
+			return i / FLASH_BLOCK_SIZE;
 	}
 
 	return -FAIL_GENERIAL_ERROR;
 }
 
-static int change_para_macaddr(unsigned char *rpara_databuf, int block_index, unsigned int *mac)
+static int change_para_macaddr(unsigned char *rpara_databuf, 
+				int block_index, unsigned int *mac)
 {
 	int i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	for (i = 0; i < 6; i++)
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5 + i] = (unsigned char)mac[i];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5 + i] = 
+			(unsigned char)mac[i];
 
 	return SUCCESS;
 }
 
-static int change_para_serialnum(unsigned char *rpara_databuf, int block_index, char *serial)
+static int change_para_serialnum(unsigned char *rpara_databuf, 
+				int block_index, char *serial)
 {
 	int i;
 
@@ -914,37 +1249,54 @@ static int change_para_serialnum(unsigned char *rpara_databuf, int block_index, 
 	for (i = 0; i < 18; i++) {
 		if (serial[i] == '-')
 			break;
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = serial[i];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = 
+			serial[i];
 	}
 
 	return SUCCESS;
 }
 
-static int change_para_pid(unsigned char *rpara_databuf, int block_index, unsigned int *pid)
+static int change_para_pid(unsigned char *rpara_databuf, 
+				int block_index, unsigned int *pid, int product_num)
 {
 	int i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 0; i < 2; i++)
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 3 + i] = (unsigned char)pid[i];
+	
+	for (i = 0; i < 2; i++) {
+		if (product_num == product_ax88279)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 3 + i] = 
+				(unsigned char)pid[i];
+		else if (product_num == product_ax88279a)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 3 + i] = 
+				(unsigned char)pid[1 - i];
+	}
 
 	return SUCCESS;
 }
 
-static int change_para_vid(unsigned char *rpara_databuf, int block_index, unsigned int *vid)
+static int change_para_vid(unsigned char *rpara_databuf, 
+				int block_index, unsigned int *vid, int product_num)
 {
 	int i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 0; i < 2; i++)
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = (unsigned char)vid[i];
+	for (i = 0; i < 2; i++) {
+		if (product_num == product_ax88279)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = 
+				(unsigned char)vid[i];
+		else if (product_num == product_ax88279a)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = 
+				(unsigned char)vid[1 - i];
+	}
 
 	return SUCCESS;
 }
 
-static int change_para_productstr(unsigned char *rpara_databuf, int block_index, char *productstr)
+static int change_para_productstr(unsigned char *rpara_databuf, 
+				int block_index, char *productstr)
 {
 	int i;
 
@@ -953,13 +1305,15 @@ static int change_para_productstr(unsigned char *rpara_databuf, int block_index,
 	for (i = 0; i < 18; i++) {
 		if (productstr[i] == '-')
 			break;
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = productstr[i];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = 
+			productstr[i];
 	}
 
 	return SUCCESS;
 }
 
-static int change_para_manufacture(unsigned char *rpara_databuf, int block_index, char *manufac)
+static int change_para_manufacture(unsigned char *rpara_databuf, 
+				int block_index, char *manufac)
 {
 	int i;
 
@@ -968,37 +1322,43 @@ static int change_para_manufacture(unsigned char *rpara_databuf, int block_index
 	for (i = 0; i < 18; i++) {
 		if (manufac[i] == '-')
 			break;
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = manufac[i];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 1 + i] = 
+			manufac[i];
 	}
 
 	return SUCCESS;
 }
 
-static int change_para_ssbus(unsigned char *rpara_databuf, int block_index, int issbus)
+static int change_para_ssbus(unsigned char *rpara_databuf, 
+				int block_index, int issbus)
 {
 	int i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	for (i = 0; i < 1; i++) 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 16 + i] = (issbus / 8);
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 16 + i] = 
+			(issbus / 8);
 
 	return SUCCESS;
 }
 
-static int change_para_hsbus(unsigned char *rpara_databuf, int block_index, int ihsbus)
+static int change_para_hsbus(unsigned char *rpara_databuf, 
+				int block_index, int ihsbus)
 {
 	int i;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
-
+	
 	for (i = 0; i < 1; i++) 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 17 + i] = (ihsbus / 2);
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 17 + i] = 
+			(ihsbus / 2);
 
 	return SUCCESS;
 }
 
-static int change_para_wol(unsigned char *rpara_databuf, int block_index, char *wol)
+static int change_para_wol(unsigned char *rpara_databuf, 
+				int block_index, char *wol)
 {
 	int i = 0;
 	unsigned int dwolEn = 0;
@@ -1009,7 +1369,7 @@ static int change_para_wol(unsigned char *rpara_databuf, int block_index, char *
 
 	for (i = 0; i < 8; i++) {
 		unsigned char bit_value = 0;
-		bit_value = (wol[i]-'0');
+		bit_value = (wol[i] - '0');
 
 		if (i == 0 && bit_value == 1) { // Disable Remote Wakeup
 			dwolEn = 1;
@@ -1050,14 +1410,14 @@ static int change_para_wol(unsigned char *rpara_databuf, int block_index, char *
 			if (i == 7 && bit_value == 1) { // PME IND Enable
 				rpara_databuf[block_index * FLASH_BLOCK_SIZE + 2] |= 0x40;
 			}
-
 		}
 	}
 
 	return SUCCESS;
 }
 
-static void set_para_led0(unsigned char *rpara_databuf, int block_index,  unsigned int *led)
+static void set_para_led0(unsigned char *rpara_databuf, 
+				int block_index,  unsigned int *led, int product_num)
 {
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1066,16 +1426,20 @@ static void set_para_led0(unsigned char *rpara_databuf, int block_index,  unsign
 	rpara_databuf[block_index * FLASH_BLOCK_SIZE + 3] = 0x24;
 
 	if (led) {
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4] = led[0];
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5] = led[1];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4]  = led[0];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5]  = led[1];
 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9] = led[2];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9]  = led[2];
 		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 10] = led[3];
 	} else {
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4] = 0xC1;
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5] = 0x03;
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4]  = 0xC1;
 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9] = 0x00;
+		if (product_num == product_ax88279)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5]  = 0x03;
+		else if (product_num == product_ax88279a)
+			rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5]  = 0x07;
+
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9]  = 0x00;
 		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 10] = 0x00;
 	}
 	rpara_databuf[block_index * FLASH_BLOCK_SIZE + 6] = 0x1F;
@@ -1087,7 +1451,8 @@ static void set_para_led0(unsigned char *rpara_databuf, int block_index,  unsign
 
 }
 
-static void set_para_led1(unsigned char *rpara_databuf, int block_index,  unsigned int *led)
+static void set_para_led1(unsigned char *rpara_databuf, 
+				int block_index,  unsigned int *led, int product_num)
 {
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1096,16 +1461,16 @@ static void set_para_led1(unsigned char *rpara_databuf, int block_index,  unsign
 	rpara_databuf[block_index * FLASH_BLOCK_SIZE + 3] = 0x26;
 
 	if (led) {
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4] = led[0];
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5] = led[1];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4]  = led[0];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5]  = led[1];
 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9] = led[2];
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9]  = led[2];
 		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 10] = led[3];
 	} else {
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4] = 0xC0;
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5] = 0x00;
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 4]  = 0xC0;
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 5]  = 0x00;
 
-		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9] = 0x0C;
+		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 9]  = 0x0C;
 		rpara_databuf[block_index * FLASH_BLOCK_SIZE + 10] = 0x0F;
 	}
 	rpara_databuf[block_index * FLASH_BLOCK_SIZE + 6] = 0x1F;
@@ -1116,7 +1481,8 @@ static void set_para_led1(unsigned char *rpara_databuf, int block_index,  unsign
 	rpara_databuf[block_index * FLASH_BLOCK_SIZE + 19] = 0x0B;
 }
 
-static int program_para_block(struct ax_command_info *info, unsigned char *rpara_databuf, int para_size)
+static int program_para_block(struct ax_command_info *info, 
+				unsigned char *rpara_databuf, int para_size)
 {
 	int ret;
 
@@ -1136,22 +1502,22 @@ static int calculate_para_offset(void *buf)
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	offset[0] = SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_OFFSET]);
-	len[0] = SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_LENGTH]);
-	offset[1] = SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_OFFSET]);
-	len[1] = SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_LENGTH]);
-	offset[2] = SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_OFFSET]);
-	len[2] = SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_LENGTH]);
-	offset[3] = SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_OFFSET]);
-	len[3] = SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_LENGTH]);
-	offset[4] = SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_OFFSET]);
-	len[4] = SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_LENGTH]);
-	offset[5] = SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_OFFSET]);
-	len[5] = SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_LENGTH]);
-	offset[6] = SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_OFFSET]);
-	len[6] = SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_LENGTH]);
-	offset[7] = SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_OFFSET]);
-	len[7] = SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_LENGTH]);
+	offset[0] 	= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_OFFSET]);
+	len[0] 		= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_LENGTH]);
+	offset[1] 	= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_OFFSET]);
+	len[1] 		= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_LENGTH]);
+	offset[2] 	= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_OFFSET]);
+	len[2] 		= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_LENGTH]);
+	offset[3] 	= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_OFFSET]);
+	len[3] 		= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_LENGTH]);
+	offset[4] 	= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_OFFSET]);
+	len[4] 		= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_LENGTH]);
+	offset[5] 	= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_OFFSET]);
+	len[5] 		= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_LENGTH]);
+	offset[6] 	= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_OFFSET]);
+	len[6] 		= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_LENGTH]);
+	offset[7] 	= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_OFFSET]);
+	len[7] 		= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_LENGTH]);
 
 	max = find_offest_max_index(offset, 8);
 
@@ -1162,15 +1528,16 @@ void dump(unsigned char *buf, int len)
 {
 	int i;
 
-	for (i = 0; i < len; i++) {
-		printf("%02X ", buf[i]);
-		if (i % 4 == 3)
-			printf("\n");
+	for (i = 0; i < len; i += 4) {
+		printf("%02X %02X %02X %02X",
+			buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
+		if (i % 20 == 0)
+			printf(" == %d", i / 20);
+		printf("\n");
 	}
-	printf("\n");
 }
 
-static void checksum_efuse_block(unsigned char *block)
+static void checksum_flash_block(unsigned char *block)
 {
 	unsigned int Sum = 0;
 	int j;
@@ -1192,7 +1559,7 @@ static void checksum_efuse_block(unsigned char *block)
 	block[0] = (block[0] & 0xF) | ((Sum << 4) & 0xF0);
 }
 
-static void checksum_para_header(unsigned short *header)
+static void checksum_para_header(unsigned short *header, int product_num)
 {
 	unsigned int Sum = 0;
 	unsigned short j;
@@ -1206,8 +1573,7 @@ static void checksum_para_header(unsigned short *header)
 		Sum = (Sum & 0xFFFF) + (Sum >> 16);
 
 	Sum = 0xFFFF - Sum;
-
-	header[5] = (Sum);
+	header[5] = Sum;
 }
 
 static int check_hex(char *temp, int size)
@@ -1221,7 +1587,7 @@ static int check_hex(char *temp, int size)
 			continue;
 		}
 		
-		if(!(isxdigit(ptemp[i])))
+		if (!(isxdigit(ptemp[i])))
 			return -FAIL_INVALID_PARAMETER;
 	}
 
@@ -1252,12 +1618,16 @@ static int writeparameter_func(struct ax_command_info *info)
 	int para_offset, block_count, para_size, ret, block_index, c, i;
 	int oi = -1;
 	struct __wpara argument = {0};
-	int temp_para_offset = 0;
+	struct _ax_dev_desc ax_dev_desc;
+	int product_num = 0;
+	bool get_dev_name = false;
+	unsigned int header_offset = 0;
+	unsigned int parm_len = 0;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	while ((c = getopt_long(info->argc, info->argv,
-				"m:s:p:v:P:M:D:S:H:w:l:e:d:",
+				"m:s:i:v:n:M:D:S:H:w:l:e:d:p:",
 				long_options, &oi)) != -1) {
 		switch (c) {
 		case 'm':
@@ -1282,7 +1652,7 @@ static int writeparameter_func(struct ax_command_info *info)
 				return print_msg("wpara");
 			}
 			break;
-		case 'p':
+		case 'i':
 			argument.PID = optarg;
 			DEBUG_PRINT("%s \r\n", argument.PID);
 			i = sscanf(argument.PID,
@@ -1302,7 +1672,7 @@ static int writeparameter_func(struct ax_command_info *info)
 			if (i != 2)
 				return print_msg("wpara");
 			break;
-		case 'P':
+		case 'n':
 			argument.product_string = optarg;
 			DEBUG_PRINT("%s \r\n", argument.product_string);
 			if (strlen(argument.product_string) > 18)
@@ -1354,10 +1724,31 @@ static int writeparameter_func(struct ax_command_info *info)
 				   (unsigned int *)&argument.LED1[2],
 				   (unsigned int *)&argument.LED1[3]);
 			break;
+		case 'p':
+			argument.device = optarg; 
+			DEBUG_PRINT("%s \r\n", argument.device);
+			if (__check_dev_name(info, argument.device, &product_num))
+				return print_msg("wpara");
+			get_dev_name = true;
+			break;	
 		case '?':
 		default:
 			return -FAIL_INVALID_PARAMETER;
 		}
+	}
+
+	if (get_dev_name == false) {
+		fprintf(stderr,"%s: [ERR] Please provide product name.\n",
+							 __func__);
+		return print_msg("wpara");
+	}
+
+	if (product_num == product_ax88279) {
+		header_offset = AX88279_HEADER_OFFSET;
+		parm_len = AX88279_PARM_LEN;
+	} else if (product_num == product_ax88279a) {
+		header_offset = SWAP_16(AX88279_HEADER_OFFSET);
+		parm_len = AX88279A_PARM_LEN;
 	}
 
 	ret = scan_ax_device(ifr, info->inet_sock);
@@ -1366,27 +1757,40 @@ static int writeparameter_func(struct ax_command_info *info)
 		return ret;
 	}
 
-	rpara_buf = (unsigned char *)malloc((FLASH_SIZE + 256) & ~(0xFF));
+	rpara_buf = (unsigned char *)malloc((FLASH_SIZE + parm_len) & ~(0xFF));
 	if (!rpara_buf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		ret = -FAIL_ALLCATE_MEM;
 		goto fail;
 	}
-	memset(rpara_buf, 0xFF, (FLASH_SIZE + 256) & ~(0xFF));
+	memset(rpara_buf, 0xFF, (FLASH_SIZE + parm_len) & ~(0xFF));
 
 	ret = read_flash(info, rpara_buf, 0, 0x3000);
 	if (ret < 0)
 		goto fail;
 
-	//temp_para_offset = calculate_para_offset(rpara_buf);
+	if (*(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET] != 
+					header_offset) {
+		/*If Header offset isn't 0xA55A, 
+		  then use sample offset and init block count*/
+		if (product_num == product_ax88279)
+			para_offset = AX88279_PARM_OFFSET;
+		else if (product_num == product_ax88279a)
+			para_offset = AX88279A_PARM_OFFSET;
 
-	if (*(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET] != 0xA55A) {
-		//printf("Not 0xA55A, use sample\n");
-		para_offset = 0x3000;
 		block_count = 0;
 	} else {
-		para_offset = SWAP_32(*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET]);
-		block_count = SWAP_16(*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT]);
+		if (product_num == product_ax88279) {
+			para_offset = 
+				SWAP_32(*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET]);
+			block_count = 
+				SWAP_16(*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT]);
+		} else if (product_num == product_ax88279a){
+			para_offset = 
+				*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET];
+			block_count = 
+				*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT];
+		}
 	}
 
 	para_size = 0;
@@ -1399,161 +1803,187 @@ static int writeparameter_func(struct ax_command_info *info)
 
 	block_index = -FAIL_GENERIAL_ERROR;
 	if (argument.mac_address) {
-		if(check_hex(argument.mac_address, 17) == -FAIL_INVALID_PARAMETER) {
+		if (check_hex(argument.mac_address, 17) == -FAIL_INVALID_PARAMETER) {
 			printf("\nFAIL: Char should be '0'-'9' & 'A(a)'-'F(f)'\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		if(strlen(argument.mac_address) != 17) {
+		if (strlen(argument.mac_address) != 17) {
 			printf("FAIL: MAC address should be 6 bytes\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_01);
+			block_index = find_block_index(&rpara_buf[para_offset], 
+						para_size, TYPE_01);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type1, 20);
-			para_size += 20;
+			/*If there is no same type in flash, creat a new one*/
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type01[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
-
-		ret = change_para_macaddr(&rpara_buf[para_offset], block_index, argument.MAC);
+		ret = change_para_macaddr(&rpara_buf[para_offset], 
+						block_index, argument.MAC);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing MAC address failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.serial_num) {
-		if(check_hex(argument.serial_num, strlen(argument.serial_num)) == -FAIL_INVALID_PARAMETER) {
+		if (check_hex(argument.serial_num, 
+			strlen(argument.serial_num)) == -FAIL_INVALID_PARAMETER) {
 			printf("\nFAIL: Char should be '0'-'9' & 'A(a)'-'F(f)'\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_04);
+			block_index = find_block_index(&rpara_buf[para_offset], 
+						para_size, TYPE_04);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type4, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type04[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
-
-		ret = change_para_serialnum(&rpara_buf[para_offset], block_index, argument.serial_num);
+		ret = change_para_serialnum(&rpara_buf[para_offset], 
+						block_index, argument.serial_num);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing serial number failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.PID) {
-		if(check_hex(argument.PID, 5) == -FAIL_INVALID_PARAMETER) {
+		if (check_hex(argument.PID, 5) == -FAIL_INVALID_PARAMETER) {
 			printf("\nFAIL: Char should be '0'-'9' & 'A(a)'-'F(f)'\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		if(strlen(argument.PID) != 5) {
+		if (strlen(argument.PID) != 5) {
 			printf("FAIL: PID be 2 bytes\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_01);
+			block_index = find_block_index(&rpara_buf[para_offset], 
+							para_size, TYPE_01);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type1, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type01[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
-		ret = change_para_pid(&rpara_buf[para_offset], block_index, argument.pid);
+		ret = change_para_pid(&rpara_buf[para_offset], block_index, 
+						argument.pid, product_num);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing PID failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.VID) {
-		if(check_hex(argument.VID, 5) == -FAIL_INVALID_PARAMETER) {
+		if (check_hex(argument.VID, 5) == -FAIL_INVALID_PARAMETER) {
 			printf("\nFAIL: Char should be '0'-'9' & 'A(a)'-'F(f)'\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		if(strlen(argument.VID) != 5) {
+		if (strlen(argument.VID) != 5) {
 			printf("FAIL: VID be 2 bytes\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_01);
+			block_index = find_block_index(
+				&rpara_buf[para_offset], para_size, TYPE_01);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type1, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type01[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
-		ret = change_para_vid(&rpara_buf[para_offset], block_index, argument.vid);
+		ret = change_para_vid(&rpara_buf[para_offset], block_index, 
+						argument.vid, product_num);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing VID failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.product_string) {
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_03);
+			block_index = find_block_index(
+				&rpara_buf[para_offset], para_size, TYPE_03);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type3, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type03[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
-		ret = change_para_productstr(&rpara_buf[para_offset], block_index, argument.product_string);
+		ret = change_para_productstr(&rpara_buf[para_offset], 
+						block_index, argument.product_string);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing Product String failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.manufacture) {
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_02);
+			block_index = find_block_index(&rpara_buf[para_offset], 
+							para_size, TYPE_02);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type2, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type02[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
-		ret = change_para_manufacture(&rpara_buf[para_offset], block_index, argument.manufacture);
+		ret = change_para_manufacture(&rpara_buf[para_offset], 
+						block_index, argument.manufacture);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing manufacture failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.ss_bus) {
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_01);
+			block_index = find_block_index(
+				&rpara_buf[para_offset], para_size, TYPE_01);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type1, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type01[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
 		if (argument.iss_bus > 896)	{
@@ -1561,23 +1991,27 @@ static int writeparameter_func(struct ax_command_info *info)
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		ret = change_para_ssbus(&rpara_buf[para_offset], block_index, argument.iss_bus);
+		ret = change_para_ssbus(
+			&rpara_buf[para_offset], block_index, argument.iss_bus);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing SS_MAX_BUS_PW failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.hs_bus) {
 		if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_01);
+			block_index = find_block_index(
+				&rpara_buf[para_offset], para_size, TYPE_01);
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type1, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type01[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
 		if (argument.ihs_bus > 500)	{
@@ -1585,14 +2019,16 @@ static int writeparameter_func(struct ax_command_info *info)
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		ret = change_para_hsbus(&rpara_buf[para_offset], block_index, argument.ihs_bus);
+		ret = change_para_hsbus(
+			&rpara_buf[para_offset], block_index, argument.ihs_bus);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing HS_MAX_BUS_PW failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.wol) {
@@ -1600,13 +2036,16 @@ static int writeparameter_func(struct ax_command_info *info)
 		int valid = 1;
 
 		if (para_size) {
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_15);
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type15, 20);
+			block_index = find_block_index(
+				&rpara_buf[para_offset], para_size, TYPE_15);
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type15[product_num].data, FLASH_BLOCK_SIZE);
 		}
 		if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type15, 20);
-			para_size += 20;
+			block_index = para_size / FLASH_BLOCK_SIZE;
+			memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+				sample_type.type15[product_num].data, FLASH_BLOCK_SIZE);
+			para_size += FLASH_BLOCK_SIZE;
 		}
 
 		if (strlen(argument.wol) != 8)	{
@@ -1615,7 +2054,7 @@ static int writeparameter_func(struct ax_command_info *info)
 		}
 
 		int time = 0;
-		for(time = 0; time < 8; time++) {
+		for (time = 0; time < 8; time++) {
 			if (argument.wol[time] != '0' && argument.wol[time] != '1') {
 				printf("FAIL: The value must be 1 or 0\n");
 				return -FAIL_INVALID_PARAMETER;
@@ -1623,7 +2062,7 @@ static int writeparameter_func(struct ax_command_info *info)
 		}
 
 		int count = 0;
-		for(time = 0; time < 8; time++) {
+		for (time = 0; time < 8; time++) {
 			if (argument.wol[time] == '1')
 				count++;
 		}
@@ -1634,76 +2073,82 @@ static int writeparameter_func(struct ax_command_info *info)
 			valid = 0;
 
 		if (argument.wol[0] == '1') {
-			for(time = 1; time < 8; time++) {
+			for (time = 1; time < 8; time++) {
 				if (argument.wol[time] == '1')
 					valid = 0;
 			}
 		} else if (argument.wol[0] == '0' && argument.wol[1] == '0') {
-			for(time = 2; time < 8; time++) {
+			for (time = 2; time < 8; time++) {
 				if (argument.wol[time] == '1')
 					valid = 0;
 			}
 		}
 
-		if(!valid) {
+		if (!valid) {
 				printf("FAIL: The value is invalid\n");
 				return -FAIL_INVALID_PARAMETER;
 		}
 
-		ret = change_para_wol(&rpara_buf[para_offset], block_index, argument.wol);
+		ret = change_para_wol(
+			&rpara_buf[para_offset], block_index, argument.wol);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing Wake on LAN failed.\n",
 				__func__);
 			goto fail;
 		}
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.led0) {
-	/*	if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_11);*/
-	//	if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type11, 20);
-			para_size += 20;
-	//	}
+		/*LED param does't need to search same index
+		  since this behavior might affect other CMDs*/
+		block_index = para_size / FLASH_BLOCK_SIZE;
+		memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+			sample_type.type11[product_num].data, FLASH_BLOCK_SIZE);
+		para_size += FLASH_BLOCK_SIZE;
+
 		if (check_led_parameter(argument.led0)) {
 			printf("FAIL: The value invaild.\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		set_para_led0(&rpara_buf[para_offset], block_index, argument.LED0);
+		set_para_led0(
+			&rpara_buf[para_offset], block_index, argument.LED0, product_num);
 
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.led1) {
-	/*	if (para_size)
-			block_index = find_block_index(&rpara_buf[para_offset], para_size, TYPE_11);*/
-		//if (block_index == -FAIL_GENERIAL_ERROR) {
-			block_index = para_size / 20;
-			memcpy(&rpara_buf[para_offset + block_index * 20], sample_type11, 20);
-			para_size += 20;
-		//}
+		block_index = para_size / FLASH_BLOCK_SIZE;
+		memcpy(&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE], 
+			sample_type.type11[product_num].data, FLASH_BLOCK_SIZE);
+		para_size += FLASH_BLOCK_SIZE;
+
 		if (check_led_parameter(argument.led1)) {
 			printf("FAIL: The value invaild.\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
-		set_para_led1(&rpara_buf[para_offset], block_index, argument.LED1);
+		set_para_led1(
+			&rpara_buf[para_offset], block_index, argument.LED1, product_num);
 		
-		checksum_efuse_block(&rpara_buf[para_offset + block_index * 20]);
+		checksum_flash_block(
+			&rpara_buf[para_offset + block_index * FLASH_BLOCK_SIZE]);
 	}
 
 	if (argument.dump) {
 		int i = 0;
-		unsigned char buf[32 * 20];
+		unsigned char buf[32 * FLASH_BLOCK_SIZE];
 		if (para_size == 0) {
-			printf("\nThe parameter content currently in flash has no data\n");
+			printf("\nThe parameter content "
+					"currently in flash has no data\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
-		printf("\nDump the parameter content currently in flash as parameter.txt file\n");
+		printf("\nDump the parameter content "
+			   "currently in flash as parameter.txt file\n");
 
 		FILE *file = fopen("parameter.txt", "w");
 		if (file == NULL) {
@@ -1718,12 +2163,11 @@ static int writeparameter_func(struct ax_command_info *info)
 		for (i = 0; i < para_size; i++) {
 			fprintf(file, "%02X", buf[i]);
 
-			if(((i + 1) % 4 == 0))
+			if (((i + 1) % 4 == 0))
 				fprintf(file, "\n");
 			else
 				fprintf(file, " ");
 		}
-
 		fclose(file);
 
 		dump(&rpara_buf[para_offset], para_size);
@@ -1731,22 +2175,44 @@ static int writeparameter_func(struct ax_command_info *info)
 
 	erase_sector_flash(info, PARAMETER_PRI_HEADER_OFFSET);
 	erase_sector_flash(info, para_offset);
+	
+	if (*(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET] != 
+		header_offset) {
+		/*Create A55A header*/
+		rpara_buf[PARAMETER_PRI_HEADER_OFFSET] = (header_offset & 0xFF);
+		rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 1] = (header_offset >> 8);
 
+		if (product_num == product_ax88279)
+			rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 2] = 0x04;
+		else if (product_num == product_ax88279a)
+			rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 2] = 0x01;
 
-	if (*(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET] != 0xA55A) {
-		//printf("Not 0xA55A, create header\n");
-		rpara_buf[PARAMETER_PRI_HEADER_OFFSET] = 0x5A;
-		rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 1] = 0xA5;
-		rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 2] = 0x04;
 		rpara_buf[PARAMETER_PRI_HEADER_OFFSET + 3] = 0;
 	}
-	*(unsigned int *)&rpara_buf[PARAMETER_PRI_OFFSET] = SWAP_32(para_offset);
-	*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT] = SWAP_16(para_size / 20);
-	checksum_para_header((unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET]);
+	if (product_num == product_ax88279) {
+		*(unsigned int *)&rpara_buf[PARAMETER_PRI_OFFSET] = 
+			SWAP_32(para_offset);
+		*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT] = 
+			SWAP_16(para_size / FLASH_BLOCK_SIZE);
+	} else if (product_num == product_ax88279a) {
+		*(unsigned int *)&rpara_buf[PARAMETER_PRI_OFFSET] = 
+			para_offset;
+		*(unsigned short *)&rpara_buf[PARAMETER_PRI_BLOCK_COUNT] = 
+			para_size / FLASH_BLOCK_SIZE;
+	}
 
-	write_flash(info, rpara_buf, PARAMETER_PRI_HEADER_OFFSET, 256);
-	write_flash(info, rpara_buf, para_offset, para_size);
-
+	checksum_para_header(
+		(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET], 
+		product_num);
+	if (product_num == product_ax88279) {
+		write_flash(info, rpara_buf, PARAMETER_PRI_HEADER_OFFSET, 
+					AX88279_PARM_HEADER_LEN);
+		write_flash(info, rpara_buf, para_offset, para_size);
+	} else if (product_num == product_ax88279a) {
+		write_flash(info, rpara_buf, PARAMETER_PRI_HEADER_OFFSET, 
+					(AX88279A_PARM_HEADER_LEN + para_size));
+	}
+	
 	sw_reset(info);
 fail:
 	if (rpara_buf)
@@ -1758,7 +2224,9 @@ fail:
 static int reload_func(struct ax_command_info *info)
 {
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
-	char fw_version[16] = {0};
+	unsigned int dev_cnt = 0, dev_num;
+	int ret;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1775,21 +2243,125 @@ static int reload_func(struct ax_command_info *info)
 		}
 	}
 
-	if (scan_ax_device(ifr, info->inet_sock)) {
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+	
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
+
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
 		PRINT_SCAN_DEV_FAIL;
-		return -FAIL_SCAN_DEV;
+		goto out;
 	}
 
-	autosuspend_enable(info, 0);
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		printf("Reset %s\n", info->ifr->ifr_name);
+		autosuspend_enable(info, 0);
+		sw_reset(info);
+	}
+	ret = SUCCESS;
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
+
+	return ret;
+}
+
+static int erase_parm_func(struct ax_command_info *info)
+{
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	unsigned char *rpara_buf = NULL;
+	int para_offset, ret, c, i;
+	int oi = -1;
+	char* device;
+	struct _ax_dev_desc ax_dev_desc;
+	int product_num = 0;
+	bool get_dev_name = false;
+	unsigned int header_offset = 0;
+	unsigned int parm_len = 0;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	while ((c = getopt_long(info->argc, info->argv,
+				"p:",
+				long_options, &oi)) != -1) {
+		switch (c) {
+		case 'p':
+			device = optarg; 
+			DEBUG_PRINT("%s \r\n", device);
+			if (__check_dev_name(info, device, &product_num))
+				return -1;
+			get_dev_name = true;
+			break;	
+		case '?':
+		default:
+			return -FAIL_INVALID_PARAMETER;
+		}
+	}
+
+	if (get_dev_name == false) {
+		fprintf(stderr,"%s: [ERR] Please provide product name.\n",
+							 __func__);
+		return print_msg("wpara");
+	}
+
+	if (product_num == product_ax88279) {
+		header_offset = AX88279_HEADER_OFFSET;
+		parm_len = AX88279_PARM_LEN;
+	} else if (product_num == product_ax88279a) {
+		header_offset = SWAP_16(AX88279_HEADER_OFFSET);
+		parm_len = AX88279A_PARM_LEN;
+	}
+
+	rpara_buf = (unsigned char *)malloc((FLASH_SIZE + parm_len) & ~(0xFF));
+	if (!rpara_buf) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto fail;
+	}
+	memset(rpara_buf, 0xFF, (FLASH_SIZE + parm_len) & ~(0xFF));
+	ret = read_flash(info, rpara_buf, 0, 0x3000);
+	if (ret < 0)
+		goto fail;
+
+	if (*(unsigned short *)&rpara_buf[PARAMETER_PRI_HEADER_OFFSET] != 
+					header_offset) {
+		if (product_num == product_ax88279)
+			para_offset = AX88279_PARM_OFFSET;
+		else if (product_num == product_ax88279a)
+			para_offset = AX88279A_PARM_OFFSET;
+	} else {
+		if (product_num == product_ax88279) 
+			para_offset = 
+				SWAP_32(*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET]);
+		else if (product_num == product_ax88279a)
+			para_offset = 
+				*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET];
+	}
+
+	printf("erase %s\n", info->ifr->ifr_name);
+	erase_sector_flash(info, PARAMETER_PRI_HEADER_OFFSET);
+	erase_sector_flash(info, para_offset);
+
+	ret = SUCCESS;
 
 	sw_reset(info);
-
-	if (scan_ax_device(ifr, info->inet_sock)) {
-		PRINT_SCAN_DEV_FAIL;
-		return -FAIL_SCAN_DEV;
-	}
-
-	return SUCCESS;
+fail:
+	if (rpara_buf)
+		free(rpara_buf);
+out:
+	return ret;
 }
 
 static int scan_ax_device(struct ifreq *ifr, int inet_sock)
@@ -1820,15 +2392,15 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
 			if (!(ifr->ifr_flags & IFF_UP))
 				continue;
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
 				continue;
 
 			if (strncmp(ioctl_cmd.sig,
-				    AX88179A_DRV_NAME,
-				    strlen(AX88179A_DRV_NAME)) == 0) {
+				    AX88279A_DRV_NAME,
+				    strlen(AX88279A_DRV_NAME)) == 0) {
 				dev_exist = 1;
 				break;
 			}
@@ -1850,15 +2422,15 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
 			if (!(ifr->ifr_flags & IFF_UP))
 				continue;
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
 				continue;
 
 			if (strncmp(ioctl_cmd.sig,
-				    AX88179A_DRV_NAME,
-				    strlen(AX88179A_DRV_NAME)) == 0)
+				    AX88279A_DRV_NAME,
+				    strlen(AX88279A_DRV_NAME)) == 0)
 				break;
 
 		}
@@ -1875,6 +2447,117 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 	return SUCCESS;
 }
 
+static int scan_ax_multi_device(struct ifreq *ifr, int inet_sock, 
+	struct ifreq **ifr_list, unsigned int *infe_num) 
+{
+	unsigned int retry;
+	unsigned int infe_cnt = 0;
+	bool rec_infe_flag = true;
+	int i;
+	
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	for (retry = 0; retry < SCAN_DEV_MAX_RETRY; retry++) {
+		unsigned int i;
+		struct _ax_ioctl_command ioctl_cmd;
+#if NET_INTERFACE == INTERFACE_SCAN
+		struct ifaddrs *addrs, *tmp;
+		unsigned char	dev_exist;
+
+		getifaddrs(&addrs);
+		tmp = addrs;
+		dev_exist = 0;
+
+		while (tmp) {
+			memset(&ioctl_cmd, 0,
+			       sizeof(struct _ax_ioctl_command));
+			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
+			sprintf(ifr->ifr_name, "%s", tmp->ifa_name);
+			tmp = tmp->ifa_next;
+			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
+
+			if (!(ifr->ifr_flags & IFF_UP))
+				continue;
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+			ifr->ifr_data = (caddr_t)&ioctl_cmd;
+			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
+				continue;
+
+			if (strncmp(ioctl_cmd.sig,
+				    AX88279A_DRV_NAME,
+				    strlen(AX88279A_DRV_NAME)) == 0) {
+				/*Check if the device already exists*/
+				for (i = 0; i < infe_cnt; i++) {
+					if (strcmp(ifr_list[i]->ifr_name, ifr->ifr_name) == 0) {
+						rec_infe_flag = false;
+						break;
+					}
+				}
+				if (rec_infe_flag == true) {
+					dev_exist = 1;
+					memcpy(ifr_list[infe_cnt], ifr, sizeof(struct ifreq));
+					infe_cnt++;
+				} else {
+					rec_infe_flag = true;
+				}
+			}
+		}
+		freeifaddrs(addrs);
+
+		if (dev_exist)
+			break;
+#else
+		for (i = 0; i < 255; i++) {
+
+			memset(&ioctl_cmd, 0,
+			       sizeof(struct _ax_ioctl_command));
+			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
+
+			sprintf(ifr->ifr_name, "eth%u", i);
+
+			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
+			if (!(ifr->ifr_flags & IFF_UP))
+				continue;
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+			ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
+				continue;
+
+			if (strncmp(ioctl_cmd.sig,
+				    AX88279A_DRV_NAME,
+				    strlen(AX88279A_DRV_NAME)) == 0) {
+
+				for (i = 0; i < infe_cnt; i++) {
+					if (strcmp(ifr_list[i]->ifr_name, ifr->ifr_name) == 0) {
+						rec_infr_flag = false;
+						break;
+					}
+				}
+				if (rec_infr_flag == true) {
+					memcpy(ifr_list[infe_cnt], ifr, sizeof(struct ifreq));
+					infe_cnt++;
+				} else {
+					rec_infr_flag = true;
+				}
+			}
+		}
+
+		if (i < 255)
+			break;
+#endif
+
+		usleep(500000);
+	}
+
+	if (retry >= SCAN_DEV_MAX_RETRY)
+		return -FAIL_SCAN_DEV;
+
+	*infe_num = infe_cnt;
+
+	return SUCCESS;
+}
+
 int main(int argc, char **argv)
 {
 	struct ifreq ifr;
@@ -1882,7 +2565,7 @@ int main(int argc, char **argv)
 	unsigned int i;
 	int inet_sock, ret = -FAIL_GENERIAL_ERROR;
 
-	//printf("%s\n", AX88179A_IOCTL_VERSION);
+	printf("%s\n", AX88279A_IOCTL_VERSION);
 
 	if (argc < 2) {
 		show_usage();
@@ -1892,7 +2575,7 @@ int main(int argc, char **argv)
 	inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
 #ifndef NOT_PROGRAM 
 	if (scan_ax_device(&ifr, inet_sock)) {
-		printf("No %s found\n", AX88179A_SIGNATURE);
+		printf("No %s found\n", AX88279A_SIGNATURE);
 		return FAIL_SCAN_DEV;
 	}
 #endif

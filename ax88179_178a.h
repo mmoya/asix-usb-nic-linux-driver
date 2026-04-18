@@ -18,7 +18,7 @@
 #define __ASIX_AX88179_178A_H
 
 #define AX88179_NAPI_WEIGHT		64
-#define AX88179_BUF_RX_SIZE		(48 * 1024)
+#define AX88179_BUF_RX_SIZE		(48 * KB_SIZE)
 #define AX88179_PHY_ID			0x03
 
 extern const struct net_device_ops ax88179_netdev_ops;
@@ -30,6 +30,11 @@ int ax88179_ioctl(struct net_device *net, struct ifreq *rq, int cmd);
 
 int ax88179_set_mac_addr(struct net_device *net, void *p);
 void ax88179_set_multicast(struct net_device *net);
+
+int ax88179_get_sset_count(struct net_device *dev, int sset);
+void ax88179_get_ethtool_stats(struct net_device *dev, 
+				struct ethtool_stats *stats, u64 *data);
+void ax88179_get_strings(struct net_device *netdev, u32 stringset, u8 *data);
 
 extern const struct driver_info ax88179_info;
 #endif

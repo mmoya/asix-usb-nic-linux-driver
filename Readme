@@ -41,7 +41,6 @@ Usage
 1. If you want to use modprobe command to mount the driver, issue the
 following command to install the driver into your system:
 	$sudo make install
-Note: This command will backup the built-in ax88179_178a driver if it exists.
 
 2. If you want to load the driver by modprobe command, issue the following 
 commands:
@@ -53,6 +52,17 @@ commands:
 
 4. If you want to check the information of driver, issue the following commands:
 	$modinfo ax_usb_nic 
+
+5. If you want to avoid driver using CDC driver, issue the following commands:
+	$sudo make udev_install
+
+6. If you want to blacklist inbox driver ax88179_178a, 
+issue the following commands and reboot system:
+	$sudo make blacklist_install
+
+7. If you want to install the driver and all configuration files into system, 
+issue the following command:
+	$sudo make install_all
 
 === Install driver manually
 1. If you want to load the driver manually, go to the driver directory and
@@ -157,18 +167,21 @@ the following command:
 
 5. If you want to write values of a file to the flash, go to the driver 
 directory and execute the following command:
-	$sudo ./ax88179b_179a_772e_772d_programmer wflash [file]
+	$sudo ./ax88179b_179a_772e_772d_programmer wflash [file] 
+		-m	-Write multiple device flash
 
 6. If you want to write the eFuse, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -f [File]
-	--led0 [value] --led1 [value] -p [device]
+	$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -w [wol]
+	-f [File] --led0 [value] --led1 [value] -p [device]
 		-m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)
 		-s [SN]     - Serial number
-		-f [File]   - eFuse file path
+		-w [wol]    - wake on LAN (XXXXXXXX) X:digit\n"
 		--led0 [value]   - value: control_blink (XXXX_XXXX)
 		--led1 [value]   - value: control_blink (XXXX_XXXX)
 		-p [device] - device: "AX88179B" or "AX88179A" or "AX88772E" or "AX88772D" 
+		-f [File]   - eFuse file path. 
+
 	example: 
 		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:81:79:01 
 		-s 00000000000001 -f eFuse_Dump.txt
@@ -178,22 +191,43 @@ the following command:
 
 		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:87:72:D1
 		-s 0000000000772D -p AX88772D
+	explain:
+		-w  bit[0] -> Disable Remote Wakeup, 
+			bit[1] -> PME enable, 
+			bit[2] -> DWOL Magic Packet, 
+			bit[3] -> DWOL Link Change, 
+			bit[4] -> S5 WOL Magic Packet, 
+			bit[5] -> S5 WOL Link Change,
+			bit[6] -> PME Retry Enable,
+			bit[7] -> PME IND Enable,
 
-7. If you want to read the eFuse, go to the driver directory and execute 
-the following command:
+7. If you want to read the eFuse and get the number of available eFuse blocks, 
+go to the driver directory and execute the following command:
 	$sudo ./ax88179b_179a_772e_772d_programmer refuse -f [File]
 
 8. If you want to reload the flash or eFuse to check version or MAC address 
 and so, go to the driver directory and execute the following command:
 	$sudo ./ax88179b_179a_772e_772d_programmer reload
 
-=== AX88179B/179A/772E/772D IEEE Test Tool
+=== AX88279/179B/179A/772E/772D IEEE Test Tool
 1. If you want to execute IEEE test, go to the driver directory and execute the following command:
 
-	$sudo ./ax88179b_179a_772e_772d_ieee ieeetest speed option
-	    -- AX88179B_179A_772E_772D IEEE Test Tool
-		[speed]    - 1000: 1000Mbps,  100: 100Mbps,  10: 10Mbps
-		[option]   - For 1000Mbps
+	$sudo ./ax88279_179ab_772e_ieee ieeetest speed option
+	    -- AX88279_179AB_772E IEEE Test Tool
+		[speed]  - 2500: 2500Mbps,  1000: 1000Mbps,  100: 100Mbps,  10: 10Mbps
+		[option] - For 2500Mbps
+				M1: Mode 1
+				M2: Mode 2
+				M3: Mode 3
+				M4: Mode 4 	P1: Pair 1
+						P2: Pair 2
+						P3: Pair 3
+						P4: Pair 4
+						P5: Pair 5
+				M5: Mode 5
+				M6: Mode 6
+				
+				- For 1000Mbps
 				M1: Mode 1
 				M2: Mode 2
 				M3: Mode 3
@@ -208,49 +242,50 @@ and so, go to the driver directory and execute the following command:
 				FF: Fixed Pattern(FF)
 				MDI: MDI
 
-=== AX88279 Linux Flash Programming Tool
+=== AX88279A/AX88279 Linux Flash Programming Tool
 1. If you want to get help message for specific command, go to the driver 
 directory and execute the following command:
-	$sudo ./ax88279_programmer help [command]
+	$sudo ./ax88279a_279_programmer help [command]
 
 2. If you want to get the version of firmware, go to the driver directory 
 and execute the following command:
-	$sudo ./ax88279_programmer rversion
+	$sudo ./ax88279a_279_programmer rversion
 
 3. If you want to get the MAC address, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88279_programmer rmacaddr
+	$sudo ./ax88279a_279_programmer rmacaddr
 
 4. If you want to write values of a file to the flash, go to the driver 
 directory and execute the following command:
-	$sudo ./ax88279_programmer wflash [file]
+	$sudo ./ax88279a_279_programmer wflash -f [file] -p AX88279
 
 5. If you want to write the parameter in flash, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88279_programmer wpara -m [MAC] -s [SN] -p [PID] -v [VID] -P [PS] -M [MN] -D [dump]
-	-S [SS] -H [HS] -w [wol] -l [led0 value] -e [led1 value] -d [led2 value]
-       -m [MAC]   	 - MAC address (XX:XX:XX:XX:XX:XX) X:'0'-'F'
-       -s [SN]    	 - Serial Number (Characters must be less than 19 bytes) X:'0'-'F'
-       -p [PID]   	 - Product ID (XX:XX) X:'0'-'F'
-       -v [VID]   	 - Vendor ID (XX:XX) X:'0'-'F'
-       -P [PS]    	 - Product String (Characters must be less than 19 bytes)
-       -M [MN]    	 - Manufacture Name (Characters must be less than 19 bytes)
-       -D [dump]	 - The parameter content currently in flash (dump)
-       -S [SS]    	 - SS bus power (XX) X:0-896 mA
-       -H [HS]    	 - HS bus power (XX) X:0-500 mA
-       -w [wol]    	 - wake on LAN (XXXXXXXX) X:1 or 0 (About setting dwol_enable s5wol_enable pme_enable)
-       -l [led0 value]	 - value: control_blink (XXXX_XXXX)
-       -e [led1 value]	 - value: control_blink (XXXX_XXXX)
+	$sudo ./ax88279a_279_programmer wpara -m [MAC] -s [SN] -i [PID] -v [VID] -n [PS] -M [MN] -D [dump]
+	-S [SS] -H [HS] -w [wol] -l [led0 value] -e [led1 value] -d [led2 value] -p [device]
+       -m [MAC]   	 	- MAC address (XX:XX:XX:XX:XX:XX) X:'0'-'F'
+       -s [SN]    	 	- Serial Number (Characters must be less than 19 bytes) X:'0'-'F'
+       -i [PID]   	 	- Product ID (XX:XX) X:'0'-'F'
+       -v [VID]   	 	- Vendor ID (XX:XX) X:'0'-'F'
+       -P [PS]    	 	- Product String (Characters must be less than 19 bytes)
+       -M [MN]    	 	- Manufacture Name (Characters must be less than 19 bytes)
+       -D [dump]	 	- The parameter content currently in flash (dump)
+       -S [SS]    	 	- SS bus power (XX) X:0-896 mA
+       -H [HS]    	 	- HS bus power (XX) X:0-500 mA
+       -w [wol]    	 	- wake on LAN (XXXXXXXX) X:1 or 0 (About setting dwol_enable s5wol_enable pme_enable)
+       -l [led0 value]	- value: control_blink (XXXX_XXXX)
+       -e [led1 value]	- value: control_blink (XXXX_XXXX)
+	   -p [device] 	 	- Device: \"AX88279\" or \"AX88279A\"\n";
 	example: 
-		$sudo ./ax88279_programmer wpara -m 00:0e:c6:81:79:01 -s 00000000000001
+		$sudo ./ax88279a_279_programmer wpara -m 00:0e:c6:81:79:01 -s 00000000000001 -p AX88279
 
-		$sudo ./ax88279_programmer wpara -p 17:90 -v 0b:95 -P ax88279 -M asix
+		$sudo ./ax88279a_279_programmer wpara -i 17:90 -v 0b:95 -n ax88279 -M asix  -p AX88279
 
-		$sudo ./ax88279_programmer wpara -S 400 -H 200 -w 01000001(represent:bit[1]= 1, bit[7]= 1)
+		$sudo ./ax88279a_279_programmer wpara -S 400 -H 200 -w 01000001(represent:bit[1]= 1, bit[7]= 1) -p AX88279
 
-		$sudo ./ax88279_programmer wpara -l C113_0004 -e C002_0C4F
+		$sudo ./ax88279a_279_programmer wpara -l C113_0004 -e C002_0C4F -p AX88279
 	explain:
-		-w bit[0] -> Disable Remote Wakeup, 
+		-w  bit[0] -> Disable Remote Wakeup, 
 			bit[1] -> PME enable, 
 			bit[2] -> DWOL Magic Packet, 
 			bit[3] -> DWOL Link Change, 
@@ -261,8 +296,8 @@ the following command:
 
 6. If you want to view the current parameter content in flash, go to the driver directory and execute 
 the following command, and you can see the file parameter.txt in driver directory:
-	$sudo ./ax88279_programmer wpara -D dump
+	$sudo ./ax88279a_279_programmer wpara -D dump -p AX88279
 
 7. If you want to reload the flash to check version or MAC address 
 and so, go to the driver directory and execute the following command:
-	$sudo ./ax88279_programmer reload
+	$sudo ./ax88279a_279_programmer reload

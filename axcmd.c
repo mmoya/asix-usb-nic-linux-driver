@@ -91,8 +91,8 @@ static unsigned long STR_TO_U32(const char *cp, char **endp,
 	if (!base)
 		base = 10;
 
-	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp-'0' : (islower(*cp)
-	    ? toupper(*cp) : *cp)-'A'+10) < base) {
+	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp - '0' : (islower(*cp)
+	    ? toupper(*cp) : *cp) - 'A' + 10) < base) {
 		result = result*base + value;
 		cp++;
 	}
@@ -174,7 +174,7 @@ static int usbcommand_func(struct ax_command_info *info)
 	ioctl_cmd.buf = NULL;
 	ioctl_cmd.type = 0;
 	ioctl_cmd.delay = 0;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
@@ -222,6 +222,7 @@ int main(int argc, char **argv)
 		memset(&ioctl_cmd, 0, sizeof(ioctl_cmd));
 		ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
 		sprintf(ifr.ifr_name, "%s", tmp->ifa_name);
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr.ifr_data = (caddr_t)&ioctl_cmd;
 		tmp = tmp->ifa_next;
 
@@ -236,6 +237,12 @@ int main(int argc, char **argv)
 
 		if (strncmp(ioctl_cmd.sig, AX88179A_DRV_NAME,
 			    strlen(AX88179A_DRV_NAME)) == 0) {
+			dev_exist = 1;
+			break;
+		}
+
+		if (strncmp(ioctl_cmd.sig, AX88279A_DRV_NAME,
+			    strlen(AX88279A_DRV_NAME)) == 0) {
 			dev_exist = 1;
 			break;
 		}
@@ -254,7 +261,7 @@ int main(int argc, char **argv)
 		ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
 
 		sprintf(ifr.ifr_name, "eth%d", i);
-
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr.ifr_data = (caddr_t)&ioctl_cmd;
 
 		if (ioctl(inet_sock, AX_PRIVATE, &ifr) < 0)
@@ -266,6 +273,10 @@ int main(int argc, char **argv)
 
 		if (strncmp(ioctl_cmd.sig, AX88179A_DRV_NAME,
 			    strlen(AX88179A_DRV_NAME)) == 0)
+			break;
+		
+		if (strncmp(ioctl_cmd.sig, AX88279A_DRV_NAME,
+			    strlen(AX88279A_DRV_NAME)) == 0)
 			break;
 	}
 

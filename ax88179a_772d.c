@@ -21,15 +21,25 @@
 #endif
 
 struct _ax_buikin_setting AX88179A_BULKIN_SIZE[] = {
-	{5, 0x7B, 0x00,	0x18, 0x0F},	//1G, SS
+	{5, 0x7B, 0x00,	0x17, 0x0F},	//1G, SS
 	{5, 0xC0, 0x02,	0x06, 0x0F},	//1G, HS
 	{7, 0xF0, 0x00,	0x0C, 0x0F},	//100M, Full, SS
 	{6, 0x00, 0x00,	0x06, 0x0F},	//100M, Half, SS
 	{5, 0xC0, 0x04,	0x06, 0x0F},	//100M, Full, HS
 	{7, 0xC0, 0x04,	0x06, 0x0F},	//100M, Half, HS
-	{7, 0x00, 0,	0x03, 0x3F},	//FS
+	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
 };
-#ifdef ENABLE_AX88279
+
+struct _ax_buikin_setting AX88772D_BULKIN_SIZE[] = {
+	{0, 0x00, 0x00,	0x00, 0x00},	//1G, SS
+	{0, 0x00, 0x00,	0x00, 0x00},	//1G, HS
+	{0, 0x00, 0x00,	0x00, 0x00},	//100M, Full, SS
+	{0, 0x00, 0x00,	0x00, 0x00},	//100M, Half, SS
+	{5, 0xC0, 0x04,	0x06, 0x0F},	//100M, Full, HS
+	{7, 0xC0, 0x04,	0x06, 0x0F},	//100M, Half, HS
+	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
+};
+
 struct _ax_buikin_setting AX88279_BULKIN_SIZE[] = {
 	{5, 0x10, 0x01,	0x11, 0x0F},	//2.5G
 	{7, 0xB3, 0x01,	0x11, 0x0F},	//1G, SS
@@ -38,11 +48,21 @@ struct _ax_buikin_setting AX88279_BULKIN_SIZE[] = {
 	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Half, SS
 	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Full, HS
 	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Half, HS
-	{7, 0x00, 0,	0x03, 0x3F},	//FS
+	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
 };
-#endif
 
-static int ax88179a_set_phy_power(struct ax_device *axdev, bool on);
+struct _ax_buikin_setting AX88279A_BULKIN_SIZE[] = {
+	{5, 0x62, 0x00, 0x0C, 0x00},    //2.5G
+	{5, 0xF5, 0x00, 0x0C, 0x00},    //1G, SS
+	{5, 0xBE, 0x02, 0x0C, 0x00},    //1G, HS
+	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Full, SS
+	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Half, SS
+	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Full, HS
+	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Half, HS
+	{5, 0x00, 0x00, 0x0C, 0x00},    //FS
+};
+
+static int ax88179a_set_phy_power(struct ax_device *axdev, bool on, int no_pm);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
 static int ax88179a_chk_eee(struct ax_device *axdev)
@@ -267,9 +287,154 @@ static int ax88179a_set_coalesce(struct net_device *netdev,
 	return ret;
 }
 
+static const char ax88179a_gstrings[][ETH_GSTRING_LEN] = {
+	"tx_packets",
+	"rx_packets",
+	"tx_bytes",
+	"rx_bytes",
+	"tx_dropped",
+	"rx_length_errors",
+	"rx_crc_errors",
+	"rx_dropped",
+	"buikin_complete",
+	"bulkin_error",
+	"bulkout_complete",
+	"bulkout_error",
+	"bulkint_complete",
+	"bulkint_error",
+#ifdef ENABLE_QUEUE_PRIORITY
+	"ep3_count",
+	"ep5_count",
+#endif
+};
+
+int ax88179a_get_sset_count(struct net_device *netdev, int sset)
+{
+	switch (sset) {
+	case ETH_SS_STATS:
+		return ARRAY_SIZE(ax88179a_gstrings);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+void ax88179a_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
+{
+	switch (stringset) {
+	case ETH_SS_STATS:
+		memcpy(data, ax88179a_gstrings, sizeof(ax88179a_gstrings));
+		break;
+	}
+}
+
+void ax88179a_get_ethtool_stats(struct net_device *netdev,
+			  struct ethtool_stats *stats, u64 *data)
+{
+	struct net_device_stats *net_stats = ax_get_stats(netdev);
+	struct ax_device *axdev = netdev_priv(netdev);
+	u64 *temp = data;
+
+	*temp++ = net_stats->tx_packets;
+	*temp++ = net_stats->rx_packets;
+	*temp++ = net_stats->tx_bytes;
+	*temp++ = net_stats->rx_bytes;
+	*temp++ = net_stats->tx_dropped;
+	*temp++ = net_stats->rx_length_errors;
+	*temp++ = net_stats->rx_crc_errors;
+	*temp++ = net_stats->rx_dropped;
+	*temp++ = axdev->bulkin_complete;
+	*temp++ = axdev->bulkin_error;
+	*temp++ = axdev->bulkout_complete;
+	*temp++ = axdev->bulkout_error;
+	*temp++ = axdev->bulkint_complete;
+	*temp++ = axdev->bulkint_error;
+#ifdef ENABLE_QUEUE_PRIORITY
+	*temp++ = axdev->ep3_count;
+	*temp++ = axdev->ep5_count;
+#endif
+}
+
+static const char ax88279a_gstrings[][ETH_GSTRING_LEN] = {
+	"tx_packets",
+	"rx_packets",
+	"tx_bytes",
+	"rx_bytes",
+	"tx_dropped",
+	"rx_length_errors",
+	"rx_crc_errors",
+	"rx_dropped",
+	"buikin_complete",
+	"bulkin_error",
+	"bulkout_complete",
+	"bulkout_error",
+	"bulkint_complete",
+	"bulkint_error",
+	"ep3_count",
+	"ep5_count",
+#ifndef ENABLE_QUEUE_PRIORITY
+	"ep7_count",
+	"ep9_count",
+	"ep_total_count",
+#endif
+};
+
+int ax88279a_get_sset_count(struct net_device *netdev, int sset)
+{
+	switch (sset) {
+	case ETH_SS_STATS:
+		return ARRAY_SIZE(ax88279a_gstrings);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+void ax88279a_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
+{
+	switch (stringset) {
+	case ETH_SS_STATS:
+		memcpy(data, ax88279a_gstrings, sizeof(ax88279a_gstrings));
+		break;
+	}
+}
+
+void ax88279a_get_ethtool_stats(struct net_device *netdev,
+			  struct ethtool_stats *stats, u64 *data)
+{
+	struct net_device_stats *net_stats = ax_get_stats(netdev);
+	struct ax_device *axdev = netdev_priv(netdev);
+	u64 *temp = data;
+
+	*temp++ = net_stats->tx_packets;
+	*temp++ = net_stats->rx_packets;
+	*temp++ = net_stats->tx_bytes;
+	*temp++ = net_stats->rx_bytes;
+	*temp++ = net_stats->tx_dropped;
+	*temp++ = net_stats->rx_length_errors;
+	*temp++ = net_stats->rx_crc_errors;
+	*temp++ = net_stats->rx_dropped;
+	*temp++ = axdev->bulkin_complete;
+	*temp++ = axdev->bulkin_error;
+	*temp++ = axdev->bulkout_complete;
+	*temp++ = axdev->bulkout_error;
+	*temp++ = axdev->bulkint_complete;
+	*temp++ = axdev->bulkint_error;
+	*temp++ = axdev->ep3_count;
+	*temp++ = axdev->ep5_count;
+#ifndef ENABLE_QUEUE_PRIORITY
+	*temp++ = axdev->ep7_count;
+	*temp++ = axdev->ep9_count;
+	*temp++ = axdev->ep_total_count;
+#endif
+}
+
 #ifdef ENABLE_PTP_FUNC
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0) 
+static int ax88179a_set_wol_get_ts_info
+(struct net_device *dev, struct kernel_ethtool_ts_info *info)
+#else
 static int ax88179a_set_wol_get_ts_info
 (struct net_device *dev, struct ethtool_ts_info *info)
+#endif
 {
 	struct ax_device *axdev = (struct ax_device *)netdev_priv(dev);
 	struct ax_ptp_cfg *ptp_cfg = axdev->ptp_cfg;
@@ -310,113 +475,194 @@ static int ax88179a_set_wol_get_ts_info
 
 const struct ethtool_ops ax88179a_ethtool_ops = {
 #if KERNEL_VERSION(5, 7, 0) < LINUX_VERSION_CODE
-	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS,
+	.supported_coalesce_params 	= ETHTOOL_COALESCE_RX_USECS,
 #endif
-	.get_drvinfo	= ax_get_drvinfo,
+	.get_drvinfo				= ax_get_drvinfo,
 #if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
-	.get_settings	= ax_get_settings,
-	.set_settings	= ax_set_settings,
+	.get_settings				= ax_get_settings,
+	.set_settings				= ax_set_settings,
 #else
-	.get_link_ksettings = ax_get_link_ksettings,
-	.set_link_ksettings = ax_set_link_ksettings,
+	.get_link_ksettings 		= ax_get_link_ksettings,
+	.set_link_ksettings 		= ax_set_link_ksettings,
 #endif
-	.get_link	= ethtool_op_get_link,
-	.get_msglevel	= ax_get_msglevel,
-	.set_msglevel	= ax_set_msglevel,
-	.get_wol	= ax_get_wol,
-	.set_wol	= ax_set_wol,
+	.get_link					= ethtool_op_get_link,
+	.get_msglevel				= ax_get_msglevel,
+	.set_msglevel				= ax_set_msglevel,
+	.get_wol					= ax_get_wol,
+	.set_wol					= ax_set_wol,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
-	.get_eee	= ax88179a_get_eee,
-	.set_eee	= ax88179a_set_eee,
+	.get_eee					= ax88179a_get_eee,
+	.set_eee					= ax88179a_set_eee,
 #endif
-	.get_coalesce	= ax88179a_get_coalesce,
-	.set_coalesce	= ax88179a_set_coalesce,
-	.get_strings	= ax_get_strings,
-	.get_sset_count = ax_get_sset_count,
-	.get_ethtool_stats = ax_get_ethtool_stats,
-	.get_pauseparam = ax_get_pauseparam,
-	.set_pauseparam = ax_set_pauseparam,
-	.get_regs_len	= ax_get_regs_len,
-	.get_regs	= ax_get_regs,
+	.get_coalesce				= ax88179a_get_coalesce,
+	.set_coalesce				= ax88179a_set_coalesce,
+	.get_strings				= ax88179a_get_strings,
+	.get_sset_count 			= ax88179a_get_sset_count,
+	.get_ethtool_stats 			= ax88179a_get_ethtool_stats,
+	.get_pauseparam 			= ax_get_pauseparam,
+	.set_pauseparam 			= ax_set_pauseparam,
+	.get_regs_len				= ax_get_regs_len,
+	.get_regs					= ax_get_regs,
 #ifdef ENABLE_PTP_FUNC
-	.get_ts_info	= ax88179a_set_wol_get_ts_info,
+	.get_ts_info				= ax88179a_set_wol_get_ts_info,
 #else
-	.get_ts_info	= ethtool_op_get_ts_info,
+	.get_ts_info				= ethtool_op_get_ts_info,
 #endif
 };
 
-#ifdef ENABLE_AX88279
 const struct ethtool_ops ax88279_ethtool_ops = {
 #if KERNEL_VERSION(5, 7, 0) < LINUX_VERSION_CODE
-	.supported_coalesce_params = ETHTOOL_COALESCE_RX_USECS,
+	.supported_coalesce_params 	= ETHTOOL_COALESCE_RX_USECS,
 #endif
-	.get_drvinfo	= ax_get_drvinfo,
+	.get_drvinfo				= ax_get_drvinfo,
 #if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
-	.get_settings	= ax_get_settings,
-	.set_settings	= ax_set_settings,
+	.get_settings				= ax_get_settings,
+	.set_settings				= ax_set_settings,
 #else
-	.get_link_ksettings = ax_get_link_ksettings,
-	.set_link_ksettings = ax_set_link_ksettings,
+	.get_link_ksettings 		= ax_get_link_ksettings,
+	.set_link_ksettings 		= ax_set_link_ksettings,
 #endif
-	.get_link	= ethtool_op_get_link,
-	.get_msglevel	= ax_get_msglevel,
-	.set_msglevel	= ax_set_msglevel,
-	.get_wol	= ax_get_wol,
-	.set_wol	= ax_set_wol,
-	.get_coalesce	= ax88179a_get_coalesce,
-	.set_coalesce	= ax88179a_set_coalesce,
-	.get_strings	= ax_get_strings,
-	.get_sset_count = ax_get_sset_count,
-	.get_ethtool_stats = ax_get_ethtool_stats,
-	.get_pauseparam = ax_get_pauseparam,
-	.set_pauseparam = ax_set_pauseparam,
-	.get_regs_len	= ax_get_regs_len,
-	.get_regs	= ax_get_regs,
+	.get_link					= ethtool_op_get_link,
+	.get_msglevel				= ax_get_msglevel,
+	.set_msglevel				= ax_set_msglevel,
+	.get_wol					= ax_get_wol,
+	.set_wol					= ax_set_wol,
+	.get_coalesce				= ax88179a_get_coalesce,
+	.set_coalesce				= ax88179a_set_coalesce,
+	.get_strings				= ax88179a_get_strings,
+	.get_sset_count 			= ax88179a_get_sset_count,
+	.get_ethtool_stats 			= ax88179a_get_ethtool_stats,
+	.get_pauseparam 			= ax_get_pauseparam,
+	.set_pauseparam 			= ax_set_pauseparam,
+	.get_regs_len				= ax_get_regs_len,
+	.get_regs					= ax_get_regs,
 #ifdef ENABLE_PTP_FUNC
-	.get_ts_info	= ax88179a_set_wol_get_ts_info,
+	.get_ts_info				= ax88179a_set_wol_get_ts_info,
 #else
-	.get_ts_info	= ethtool_op_get_ts_info,
+	.get_ts_info				= ethtool_op_get_ts_info,
 #endif
 };
-#endif
 
-void ax88179a_get_fw_version(struct ax_device *axdev)
+const struct ethtool_ops ax88279a_ethtool_ops = {
+#if KERNEL_VERSION(5, 7, 0) < LINUX_VERSION_CODE
+	.supported_coalesce_params 	= ETHTOOL_COALESCE_RX_USECS,
+#endif
+	.get_drvinfo				= ax_get_drvinfo,
+#if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
+	.get_settings				= ax_get_settings,
+	.set_settings				= ax_set_settings,
+#else
+	.get_link_ksettings 		= ax_get_link_ksettings,
+	.set_link_ksettings 		= ax_set_link_ksettings,
+#endif
+	.get_link					= ethtool_op_get_link,
+	.get_msglevel				= ax_get_msglevel,
+	.set_msglevel				= ax_set_msglevel,
+	.get_wol					= ax_get_wol,
+	.set_wol					= ax_set_wol,
+	.get_coalesce				= ax88179a_get_coalesce,
+	.set_coalesce				= ax88179a_set_coalesce,
+	.get_strings				= ax88279a_get_strings,
+	.get_sset_count 			= ax88279a_get_sset_count,
+	.get_ethtool_stats 			= ax88279a_get_ethtool_stats,
+	.get_pauseparam 			= ax_get_pauseparam,
+	.set_pauseparam 			= ax_set_pauseparam,
+	.get_regs_len				= ax_get_regs_len,
+	.get_regs					= ax_get_regs,
+#ifdef ENABLE_PTP_FUNC
+	.get_ts_info				= ax88179a_set_wol_get_ts_info,
+#else
+	.get_ts_info				= ethtool_op_get_ts_info,
+#endif
+};
+
+int ax88179a_get_fw_version(struct ax_device *axdev)
 {
-	int i;
+	int i, ret = 0;
 
 	for (i = 0; i < 3; i++) {
-		if (ax_read_cmd(axdev, AX88179A_ACCESS_BL, (0xFD + i),
-				1, 1, &axdev->fw_version[i], 1) < 0) {
+		ret = ax_read_cmd(axdev, AX88179A_ACCESS_BL, (0xFD + i),
+				1, 1, &axdev->fw_version[i], 1);
+		if (ret < 0) {
 			axdev->fw_version[i] = ~0;
 		}
 	}
 
-	if (ax_read_cmd(axdev, AX88179A_ACCESS_BL, AX88179A_SW_REVERSION, 1, 1,
-			&axdev->fw_version[3], 0) < 0)
+	ret = ax_read_cmd(axdev, AX88179A_ACCESS_BL, AX88179A_SW_REVERSION, 
+				1, 1, &axdev->fw_version[3], 0);
+	if (ret < 0)
 		axdev->fw_version[3] = ~0;
 	else
-		axdev->fw_version[3] &= 0xF;
+		axdev->fw_version[3] &= 0xFF;
+
+	return ret;
+}
+
+void ax88279_get_ephy_fw_version(struct ax_device *axdev)
+{
+
+	if (axdev->chip_version >= AX_VERSION_AX88279 &&
+		ax_read_cmd(axdev, AX_PBUS_A32, 0x3B3C, 0, 4,
+				&axdev->ephy_fw_version, 0) >= 0)
+		return;
+	
+	axdev->ephy_fw_version = ~0;
 }
 
 int ax88179a_signature(struct ax_device *axdev, struct _ax_ioctl_command *info)
 {
-	strncpy(info->sig, AX88179A_SIGNATURE, strlen(AX88179A_SIGNATURE));
+	if (axdev->chip_version >= AX_VERSION_AX88279)
+		strncpy(info->sig, AX88279A_SIGNATURE, strlen(AX88279A_SIGNATURE));
+	else if (axdev->chip_version == AX_VERSION_AX88179A_772D)
+		strncpy(info->sig, AX88179A_SIGNATURE, strlen(AX88179A_SIGNATURE));
+	
 	return 0;
 }
 
 int ax88179a_read_version(struct ax_device *axdev,
 			  struct _ax_ioctl_command *info)
 {
-	unsigned char temp[16] = {0};
+	unsigned char temp[32] = {0};
+	int ret;
 
 	DEBUG_PRINTK("%s - Start", __func__);
 
-	sprintf(temp, "v%d.%d.%d.%d",
+	ret = ax88179a_get_fw_version(axdev);
+	
+	if (axdev->chip_version >= AX_VERSION_AX88279) {
+		ax88279_get_ephy_fw_version(axdev);
+
+		sprintf(temp, "v%d.%d.%d.%d_%08X",
+		axdev->fw_version[0], axdev->fw_version[1],
+		axdev->fw_version[2], axdev->fw_version[3],
+		axdev->ephy_fw_version);
+
+		memcpy(&info->version.version, temp, 32);
+	} else {
+		sprintf(temp, "v%d.%d.%d.%d",
 		axdev->fw_version[0], axdev->fw_version[1],
 		axdev->fw_version[2], axdev->fw_version[3]);
+		
+		memcpy(&info->version.version, temp, 16);
+	}
 
-	memcpy(&info->version.version, temp, 16);
+	return ret;
+}
 
+int ax88179a_get_dev_desc(struct ax_device *axdev, 
+				struct _ax_ioctl_command *info)
+{
+	char serial_num[19];
+	uint32_t serial_num_size = sizeof(serial_num);
+
+	DEBUG_PRINTK("%s - Start", __func__);
+	
+	info->ax_dev_desc.bcd_id = axdev->udev->descriptor.bcdDevice;
+
+	usb_string(axdev->udev, axdev->udev->descriptor.iSerialNumber, 
+					serial_num, serial_num_size);
+	memcpy(info->ax_dev_desc.serial_num, serial_num, serial_num_size);
+	
 	return 0;
 }
 
@@ -461,6 +707,7 @@ int ax88179a_write_flash(struct ax_device *axdev,
 			info->flash.status = -ERR_FALSH_WRITE;
 			goto out;
 		}
+		udelay(10000);
 	}
 
 	ret = ax_write_cmd(axdev, AX88179A_FLASH_WDIS, 0, 0, 0, NULL);
@@ -581,12 +828,7 @@ int ax88179a_boot_to_rom(struct ax_device *axdev,
 	ret = usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0),
 			      AX88179A_BOOT_TO_ROM,
 			      USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			      0x5A5A, 0xA5A5, NULL, 0, 1);
-	if (ret < 0) {
-		netdev_err(axdev->netdev, "Booting to rom failed");
-		info->flash.status = -ERR_BOOT_CODE;
-		return ret;
-	}
+			      0x5A5A, 0xA5A5, NULL, 0, 1000);
 
 	return 0;
 }
@@ -606,9 +848,10 @@ int ax88179a_erase_flash(struct ax_device *axdev,
 	}
 
 	ret = usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0),
-			      AX88179A_FLASH_EARSE_ALL,
+			      AX88179A_FLASH_ERASE_ALL,
 			      USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			      0, 0, NULL, 0, 300000);
+			      0, 0, NULL, 0, 600000);
+
 	if (ret < 0) {
 		netdev_err(axdev->netdev, "Flash erase all failed");
 		info->flash.status = -ERR_FALSH_ERASE_ALL;
@@ -640,9 +883,10 @@ int ax88179a_erase_sector_flash(struct ax_device *axdev,
 	}
 
 	ret = usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0),
-			      0x28,
+			      AX88179A_FLASH_ERASE_SECTION,
 			      USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			      (info->flash.offset >> 16) & 0xFFFF, info->flash.offset & 0xFFFF, NULL, 0, 300000);
+			      (info->flash.offset >> 16) & 0xFFFF, info->flash.offset & 0xFFFF, 
+				  NULL, 0, 600000);
 	if (ret < 0) {
 		netdev_err(axdev->netdev, "Flash erase sector failed");
 		info->flash.status = -ERR_FALSH_ERASE_ALL;
@@ -670,8 +914,9 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 		return -ENOMEM;
 
 	*((u32 *)buf) = 1;
-#ifdef ENABLE_AX88279	
-	if (axdev->chip_version == AX_VERSION_AX88279) {
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		ax_write_cmd(axdev, 0xE2, 0, 0, 0, NULL);
+	} else if (axdev->chip_version >= AX_VERSION_AX88279) {
 		*((u8 *)buf) = 0x41;
 		ax_write_cmd(axdev, 0x2A, 0xAA00, 0, 1, buf);
 	} else {
@@ -679,11 +924,7 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 			0x18E8, 0x000F, buf, 4, 10);
 	}
-#else
-	usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0), 0x10,
-		USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-		0x18E8, 0x000F, buf, 4, 10);
-#endif
+
 	kfree(buf);
 
 	return 0;
@@ -691,6 +932,93 @@ int ax88179a_sw_reset(struct ax_device *axdev, struct _ax_ioctl_command *info)
 
 #define _MDIO_WRITE(offset, value) \
 	ax_mdio_write(netdev, phy_id, offset, value)
+
+#define _PBUS_WRITE(offset, value) ({		\
+	u32 __reg32 = (u32) (value);			\
+	ax_write_cmd(axdev, AX_PBUS_A32,		\
+		(offset & 0xFFFF), (offset >> 16), 	\
+		4, &__reg32);						\
+})
+void ax88279_ieee_test_2500_m4(struct ax_device *axdev, 
+	struct _ax_ioctl_command *info) {
+	switch (info->ieee.subtype) {
+	case IEEE_2500M4_P1:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00142101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x3089C, 0x000001FF);
+		break;
+	case IEEE_2500M4_P2:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00242101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x3089C, 0x000001FF);
+
+		break;
+	case IEEE_2500M4_P3:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00442101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x3089C, 0x000001FF);
+		break;
+	case IEEE_2500M4_P4:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00542101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x3089C, 0x000001FF);
+		break;
+	case IEEE_2500M4_P5:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00642101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x3089C, 0x000001FF);
+		break;
+	default:
+		break;
+	}
+}
+
+void ax88279_ieee_test_2500(struct ax_device *axdev, 
+	struct _ax_ioctl_command *info) {
+
+	switch (info->ieee.type) {
+	case IEEE_2500M1:
+		_PBUS_WRITE(0x30008, 0x01000007);
+		_PBUS_WRITE(0x30200, 0x8F601101);
+		_PBUS_WRITE(0x30004, 0x00112101);
+		break;
+	case IEEE_2500M2:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00122101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		break;
+	case IEEE_2500M3:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30200, 0x89611101);
+		_PBUS_WRITE(0x30004, 0x00132101);
+		_PBUS_WRITE(0x85024, 0x00000000);
+		_PBUS_WRITE(0x30200, 0x89601101);
+		_PBUS_WRITE(0x10608, 0x00000808);
+		break;
+	case IEEE_2500M4:
+		ax88279_ieee_test_2500_m4(axdev, info);
+		break;
+	case IEEE_2500M5:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00152101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		_PBUS_WRITE(0x30080, 0x0C000006);
+		_PBUS_WRITE(0x30898, 0x01FF01ED);
+		break;
+	case IEEE_2500M6:
+		_PBUS_WRITE(0x30200, 0x8C611101);
+		_PBUS_WRITE(0x30004, 0x00162101);
+		_PBUS_WRITE(0x30200, 0x8C601101);
+		break;
+	default:
+		break;
+	}
+}
 
 int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 {
@@ -702,25 +1030,40 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 	DEBUG_PRINTK("Stop: %d", info->ieee.stop);
 	DEBUG_PRINTK("Speed: %d", info->ieee.speed);
 	DEBUG_PRINTK("Type: %d", info->ieee.type);
+	DEBUG_PRINTK("Subtype: %d", info->ieee.subtype);
 
-	if (info->ieee.speed == 1000 && axdev->chip_pin == CHIP_32PIN) {
+	if ((info->ieee.speed == 1000 && axdev->chip_pin == CHIP_32PIN) ||
+		(info->ieee.speed == 2500 && axdev->chip_version < AX_VERSION_AX88279)
+		) {
 		netdev_err(axdev->netdev, "Invalid Chip pin");
 		info->ieee.status = -ERR_IEEE_INVALID_CHIP;
 		return -EINVAL;
 	}
 
 	if (info->ieee.stop) {
-		ret = ax88179a_set_phy_power(axdev, false);
+		ret = ax88179a_set_phy_power(axdev, false, 0);
 		if (ret < 0)
 			return ret;
 		msleep(500);
 
-		ret = ax88179a_set_phy_power(axdev, true);
+		ret = ax88179a_set_phy_power(axdev, true, 0);
 		if (ret < 0)
 			return ret;
 		msleep(500);
 
 		switch (info->ieee.speed) {
+		case 2500:
+			_MDIO_WRITE(0x31, 0x0004);
+			_MDIO_WRITE(0x16, 0x0000);
+			_MDIO_WRITE(0x17, 0x0001);
+			_MDIO_WRITE(0x18, 0x0204);
+			_MDIO_WRITE(0x19, 0x0000);
+			_MDIO_WRITE(0x20, 0x0001);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x800C, 0x0008);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x800D, 0x0000);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x800E, 0x1100);
+			ax_mmd_write(axdev->netdev, 0x1E, 0x800F, 0x0001);
+			break;
 		case 1000:
 		case 100:
 			break;
@@ -740,6 +1083,14 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 		};
 	} else {
 		switch (info->ieee.type) {
+		case IEEE_2500M1:
+		case IEEE_2500M2:
+		case IEEE_2500M3:
+		case IEEE_2500M4:
+		case IEEE_2500M5:
+		case IEEE_2500M6:
+			ax88279_ieee_test_2500(axdev, info);
+			break;
 		case IEEE_1000M1:
 			_MDIO_WRITE(0x09, 0x2700);
 			break;
@@ -767,12 +1118,12 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			_MDIO_WRITE(0x0E, 0x5018);
 			break;
 		case IEEE_10R:
-			ret = ax88179a_set_phy_power(axdev, false);
+			ret = ax88179a_set_phy_power(axdev, false, 0);
 			if (ret < 0)
 				return ret;
 			msleep(100);
 
-			ret = ax88179a_set_phy_power(axdev, true);
+			ret = ax88179a_set_phy_power(axdev, true, 0);
 			if (ret < 0)
 				return ret;
 			_MDIO_WRITE(0x00, 0x0100);
@@ -793,12 +1144,12 @@ int ax88179a_ieee_test(struct ax_device *axdev, struct _ax_ioctl_command *info)
 			_MDIO_WRITE(0x00, 0x0100);
 			break;
 		case IEEE_10FF:
-			ret = ax88179a_set_phy_power(axdev, false);
+			ret = ax88179a_set_phy_power(axdev, false, 0);
 			if (ret < 0)
 				return ret;
 			msleep(100);
 
-			ret = ax88179a_set_phy_power(axdev, true);
+			ret = ax88179a_set_phy_power(axdev, true, 0);
 			if (ret < 0)
 				return ret;
 			_MDIO_WRITE(0x00, 0x0100);
@@ -865,6 +1216,7 @@ IOCTRL_TABLE ax88179a_tbl[] = {
 	ax88179a_ieee_test,
 	ax88179a_autosuspend_en,
 	ax88179a_erase_sector_flash,
+	ax88179a_get_dev_desc,
 };
 
 #ifdef ENABLE_PTP_FUNC
@@ -922,6 +1274,10 @@ int ax88179a_siocdevprivate(struct net_device *netdev, struct ifreq *rq,
 			netdev_err(netdev, "copy_from_user, return -EFAULT");
 			return -EFAULT;
 		}
+		if (info.ax_cmd_sig != AX_PRIV_SIGNATURE) {
+			netdev_err(netdev, "IOCTL command isn't private");
+			return -EFAULT;
+		}
 		DEBUG_PRINTK("ioctl_cmd: %d", info.ioctl_cmd);
 		ret = (*ax88179a_tbl[info.ioctl_cmd])(axdev, &info);
 		if (ret < 0)
@@ -968,6 +1324,10 @@ int ax88179a_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 			netdev_err(netdev, "copy_from_user, return -EFAULT");
 			return -EFAULT;
 		}
+		if (info.ax_cmd_sig != AX_PRIV_SIGNATURE) {
+			netdev_err(netdev, "IOCTL command isn't private");
+			return -EFAULT;
+		}
 		DEBUG_PRINTK("ioctl_cmd: %d", info.ioctl_cmd);
 		ret = (*ax88179a_tbl[info.ioctl_cmd])(axdev, &info);
 		if (ret < 0) {
@@ -993,11 +1353,19 @@ int ax88179a_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 }
 #endif
 
-static int ax88179a_autodetach(struct ax_device *axdev)
+static int ax88179a_autodetach(struct ax_device *axdev, int no_pm)
 {
-	u16 value = ((axdev->autodetach) ? 1 : 0) | AX88179A_AUTODETACH_DELAY;
+	usb_write_function fnw;
+	u16 value;
 
-	return ax_write_cmd(axdev, AX88179A_AUTODETACH, value, 0, 0, NULL);
+	if (!no_pm)
+		fnw = ax_write_cmd;
+	else
+		fnw = ax_write_cmd_nopm;
+
+	value = ((axdev->autodetach) ? 1 : 0) | (u16)AX88179A_AUTODETACH_DELAY;
+
+	return fnw(axdev, AX88179A_AUTODETACH, value, 0, 0, NULL);
 }
 
 static bool ax88179a_check_phy_power(struct ax_device *axdev)
@@ -1012,13 +1380,19 @@ static bool ax88179a_check_phy_power(struct ax_device *axdev)
 	return (reg8 & AX_PHY_POWER);
 }
 
-static int ax88179a_set_phy_power(struct ax_device *axdev, bool on)
+static int ax88179a_set_phy_power(struct ax_device *axdev, bool on, int no_pm)
 {
 	u8 reg8;
 	int ret;
+	usb_write_function fnw;
 
-	reg8 = (on)?AX_PHY_POWER:0;
-	ret = ax_write_cmd_nopm(axdev, AX88179A_PHY_POWER, 0, 0, 1, &reg8);
+	if (!no_pm)
+		fnw = ax_write_cmd;
+	else
+		fnw = ax_write_cmd_nopm;
+
+	reg8 = (on) ? AX_PHY_POWER : 0;
+	ret = fnw(axdev, AX88179A_PHY_POWER, 0, 0, 1, &reg8);
 	if (ret < 0)
 		return ret;
 	msleep(250);
@@ -1027,7 +1401,8 @@ static int ax88179a_set_phy_power(struct ax_device *axdev, bool on)
 		u16 reg16;
 
 		printk("ENABLE_INT_AGGRESSIVE");
-		ax_write_cmd(axdev, 0x32, 0x3, 0, 0, &reg16);
+
+		fnw(axdev, 0x32, 0x3, 0, 0, &reg16);
 	}
 #endif
 	return 0;
@@ -1037,64 +1412,109 @@ static int ax88179a_bind(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
 	u16 wvalue = 0;
+	int max_mtu;
 	int ret;
 
 	ax88179a_get_fw_version(axdev);
-#ifdef ENABLE_AX88279
-	if (axdev->chip_version == AX_VERSION_AX88279)
-		PRINT_VERSION(axdev, AX_DRIVER_STRING_279);
+	ax88279_get_ephy_fw_version(axdev);
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		PRINT_VERSION_279(axdev, AX_DRIVER_STRING_279A);
+	else if (axdev->chip_version == AX_VERSION_AX88279)
+		PRINT_VERSION_279(axdev, AX_DRIVER_STRING_279);
 	else
-		PRINT_VERSION(axdev, AX_DRIVER_STRING_179A_772D);
-#else
-	PRINT_VERSION(axdev, AX_DRIVER_STRING_179A_772D);
-#endif
+		PRINT_VERSION_179(axdev, AX_DRIVER_STRING_179A_772D);
 
 #ifdef ENABLE_QUEUE_PRIORITY
 	wvalue |= AX_USB_EP5_EN;
 #endif
-#ifdef ENABLE_AX88279
+
 #ifdef ENABLE_PTP_FUNC
 	wvalue |= AX_USB_EP4_EN;
 #endif
-#endif
-	ret = ax_write_cmd(axdev, AX_FW_MODE, AX_FW_MODE_179A, wvalue, 0, NULL);
+
+	ret = ax_write_cmd_nopm(axdev, AX_FW_MODE, AX_FW_MODE_179A, wvalue, 0, NULL);
 	if (ret < 0)
 		return ret;
 
-	ret = ax_write_cmd(axdev, AX_RELOAD_FLASH_EFUSE, 0, 0, 0, NULL);
+	ret = ax_write_cmd_nopm(axdev, AX_RELOAD_FLASH_EFUSE, 0, 0, 0, NULL);
 	if (ret < 0)
 		return ret;
 
-	netdev->features    |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
-			       NETIF_F_SG | NETIF_F_TSO | NETIF_F_FRAGLIST |
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-					NETIF_F_HW_VLAN_CTAG_RX |
-					NETIF_F_HW_VLAN_CTAG_TX;
-#else
-					NETIF_F_HW_VLAN_RX |
-					NETIF_F_HW_VLAN_TX;
-#endif
-	netdev->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
-			       NETIF_F_SG | NETIF_F_TSO | NETIF_F_FRAGLIST |
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-					NETIF_F_HW_VLAN_CTAG_RX |
-					NETIF_F_HW_VLAN_CTAG_TX | NETIF_F_RXALL;
-#else
-					NETIF_F_HW_VLAN_RX |
-					NETIF_F_HW_VLAN_TX | NETIF_F_RXALL;
+#ifndef ENABLE_LPM
+	u32 reg32;
+	ret = ax_read_cmd_nopm(axdev, AX88179A_USB_DC, 0x3404, 0, 4, &reg32, 0);
+	if (ret < 0)
+		return ret;
+
+	reg32 &= 0xFFFF98FF;
+	reg32 |= 0x00006100;
+
+	ret = ax_write_cmd_nopm(axdev, AX88179A_USB_DC, 0x3404, 0, 4, &reg32);
+	if (ret < 0)
+		return ret;
+	ret = 0;
 #endif
 
-		netdev->vlan_features = NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_TSO |
-				NETIF_F_HIGHDMA | NETIF_F_FRAGLIST |
-				NETIF_F_IPV6_CSUM;
+	netdev->features |= NETIF_F_IP_CSUM 		| 
+						NETIF_F_IPV6_CSUM 		|
+			       		NETIF_F_SG 				| 
+						NETIF_F_TSO 			| 
+						NETIF_F_FRAGLIST 		|
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+						NETIF_F_HW_VLAN_CTAG_RX |
+						NETIF_F_HW_VLAN_CTAG_TX;
+#else
+						NETIF_F_HW_VLAN_RX 		|
+						NETIF_F_HW_VLAN_TX;
+#endif
+	netdev->hw_features |= 	NETIF_F_IP_CSUM 		| 
+							NETIF_F_IPV6_CSUM 		|
+			      			NETIF_F_SG 				| 
+							NETIF_F_TSO 			| 
+							NETIF_F_FRAGLIST 		|
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+							NETIF_F_HW_VLAN_CTAG_RX |
+							NETIF_F_HW_VLAN_CTAG_TX | 
+							NETIF_F_RXALL;
+#else
+							NETIF_F_HW_VLAN_RX 		|
+							NETIF_F_HW_VLAN_TX 		| 
+							NETIF_F_RXALL;
+#endif
+
+	netdev->vlan_features = NETIF_F_SG 			| 
+							NETIF_F_IP_CSUM 	| 
+							NETIF_F_TSO 		|
+							NETIF_F_HIGHDMA 	| 
+							NETIF_F_FRAGLIST 	|
+							NETIF_F_IPV6_CSUM;
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		max_mtu = AX88279A_MAX_MTU;
+	else
+		max_mtu = AX88179A_MAX_MTU;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
-	netdev->max_mtu = (9 * 1024);
+	netdev->max_mtu = max_mtu;
 #else
-	axdev->max_mtu = (9 * 1024);
+	axdev->max_mtu = max_mtu;
 #endif
-	axdev->tx_casecade_size = TX_CASECADES_SIZE;
-	axdev->gso_max_size = AX_GSO_DEFAULT_SIZE;
+	if (axdev->udev->descriptor.bcdDevice == AX_BCDDEVICE_ID_772D) {
+		axdev->rx_max = AX88772_MAX_RX;
+		axdev->tx_max = AX88772_MAX_TX;
+		axdev->rx_buf = AX88772_BUF_RX_SIZE;
+		axdev->tx_buf = AX88772_BUF_TX_SIZE;
+	} else {
+		axdev->rx_max = AX88179_MAX_RX;
+		axdev->tx_max = AX88179_MAX_TX;
+		axdev->rx_buf = axdev->driver_info->buf_rx_size;
+		axdev->tx_buf = AX88179_BUF_TX_SIZE;
+	}
+	axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
+	                          (axdev->tx_buf - (1 * KB_SIZE)) 	  : 
+							  (TX_CASECADES_SIZE);
+	axdev->gso_max_size = axdev->tx_casecade_size;
 	axdev->mii.supports_gmii = true;
 	axdev->mii.dev = netdev;
 	axdev->mii.mdio_read = ax_mdio_read;
@@ -1110,15 +1530,13 @@ static int ax88179a_bind(struct ax_device *axdev)
 	axdev->bin_setting.custom = false;
 	axdev->tx_align_len = 8;
 	axdev->coalesce = 0;
-#ifdef ENABLE_AX88279
-	if (axdev->chip_version == AX_VERSION_AX88279) {
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netdev->ethtool_ops = &ax88279a_ethtool_ops;
+	else if (axdev->chip_version == AX_VERSION_AX88279)
 		netdev->ethtool_ops = &ax88279_ethtool_ops;
-	} else {
+	else 
 		netdev->ethtool_ops = &ax88179a_ethtool_ops;
-	}
-#else
-	netdev->ethtool_ops = &ax88179a_ethtool_ops;
-#endif
 	
 	axdev->netdev->netdev_ops = &ax88179a_netdev_ops;
 
@@ -1153,13 +1571,11 @@ static int ax88179a_stop(struct ax_device *axdev)
 
 	reg16 = AX_RX_CTL_STOP;
 	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2, &reg16);
-#ifdef ENABLE_AX88279
+
 #ifdef ENABLE_PTP_FUNC
 	ax88279_stop_get_ts(axdev);
 #endif
-#endif
-
-	ax88179a_set_phy_power(axdev, false);
+	ax88179a_set_phy_power(axdev, false, 0);
 
 	return 0;
 }
@@ -1181,10 +1597,8 @@ void ax88179a_set_multicast(struct net_device *netdev)
 
 	axdev->rxctl = (AX_RX_CTL_START | AX_RX_CTL_AB 
 				   | ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0));
-#ifdef ENABLE_AX88279
-	if (axdev->chip_version == AX_VERSION_AX88279)
+	if (axdev->chip_version >= AX_VERSION_AX88279)
 		axdev->rxctl |= AX_RX_CTL_DROPCRCERR;
-#endif
 
 	if (netdev->flags & IFF_PROMISC) {
 		axdev->rxctl |= AX_RX_CTL_PRO;
@@ -1226,29 +1640,37 @@ void ax88179a_set_multicast(struct net_device *netdev)
 			   2, 2, &axdev->rxctl);
 }
 
-static int ax88179a_hw_init(struct ax_device *axdev)
+static int ax88179a_hw_init(struct ax_device *axdev, int no_pm)
 {
 	u16 reg16;
 	u8 reg8;
 	int ret;
+	usb_read_function fnr;
+	usb_write_function fnw;
 
-#ifdef ENABLE_AX88279
+	if (!no_pm) {
+		fnr = ax_read_cmd;
+		fnw = ax_write_cmd;
+	} else {
+		fnr = ax_read_cmd_nopm;
+		fnw = ax_write_cmd_nopm;
+	}
+
 	if (axdev->chip_version != AX_VERSION_AX88279) {
 		u32 reg32 = 0;
-		ret = ax_read_cmd(axdev, AX88179A_PBUS_REG,0x18C8, 0, 4,
+		ret = fnr(axdev, AX88179A_PBUS_REG, 0x18C8, 0, 4,
 				  &reg32, 1);
 		if (ret < 0)
 			return ret;
 		axdev->chip_pin = reg32 & 0x03;
 		axdev->ipalign = 0;
 	}
-#endif
-	ret = ax88179a_set_phy_power(axdev, true);
+
+	ret = ax88179a_set_phy_power(axdev, true, no_pm);
 	if (ret < 0)
 		return ret;
 	msleep(250);
 
-#ifdef ENABLE_AX88279
 	if (axdev->chip_version == AX_VERSION_AX88279) {
 		reg16 = ax_mdio_read(axdev->netdev, axdev->mii.phy_id,
 				     MII_ADVERTISE);
@@ -1259,90 +1681,99 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 			      (BMCR_ANRESTART | BMCR_ANENABLE));
 		axdev->ipalign = 1;
 	}
-#endif
-	ret = ax88179a_autodetach(axdev);
+
+	ret = ax88179a_autodetach(axdev, no_pm);
 	if (ret < 0)
 		return ret;
 
-	reg8 = AX_TXCOE_IP | AX_TXCOE_TCP | AX_TXCOE_UDP |
-	       AX_TXCOE_TCPV6 | AX_TXCOE_UDPV6;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_TXCOE_CTL, 1, 1, &reg8);
+	reg8 = 	AX_TXCOE_IP 	| 
+			AX_TXCOE_TCP 	| 
+			AX_TXCOE_UDP 	|
+	       	AX_TXCOE_TCPV6 	| 
+			AX_TXCOE_UDPV6;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_TXCOE_CTL, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
-	reg8 = AX_RXCOE_IP | AX_RXCOE_TCP | AX_RXCOE_UDP |
-	       AX_RXCOE_TCPV6 | AX_RXCOE_UDPV6;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_RXCOE_CTL, 1, 1, &reg8);
+	reg8 = 	AX_RXCOE_IP 	| 
+			AX_RXCOE_TCP	| 
+			AX_RXCOE_UDP 	|
+	      	AX_RXCOE_TCPV6 	| 
+		   	AX_RXCOE_UDPV6;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RXCOE_CTL, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = AX_MAC_EFF_EN;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_BULK_OUT_CTRL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BULK_OUT_CTRL,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg16 = 0;
-	ret = ax_write_cmd_async(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0x04;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0x10;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-		if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_FILTER)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_FILTER)
 #else
-		if (axdev->netdev->features & NETIF_F_HW_VLAN_FILTER)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_FILTER)
 #endif		
 		reg8 |= AX_VLAN_CONTROL_VFE;
+		
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-		if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_RX)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_RX)
 #else
-		if (axdev->netdev->features & NETIF_F_HW_VLAN_RX)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_RX)
 #endif		
-	reg8 |= AX_VLAN_CONTROL_VSO;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_VLAN_ID_CONTROL,
+		reg8 |= AX_VLAN_CONTROL_VSO;
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_VLAN_ID_CONTROL,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0xff;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_INT_MASK,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_INT_MASK,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_RX_DMA_CTL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_RX_DMA_CTL,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_TX_DMA_CTL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_TX_DMA_CTL,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_ARC_CTRL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_ARC_CTRL,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_SWP_CTRL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_SWP_CTRL,
 			    1, 1, &reg8);
 	if (ret < 0)
 		return ret;
@@ -1354,60 +1785,255 @@ static int ax88179a_hw_init(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
-	reg16 = AX_RX_CTL_START | AX_RX_CTL_AP | AX_RX_CTL_AMALL |
-		AX_RX_CTL_AB | AX_RX_CTL_DROPCRCERR | ((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_RX_CTL, 1, 1, &reg16);
+	reg16 = AX_RX_CTL_START 		| 
+			AX_RX_CTL_AP 			| 
+			AX_RX_CTL_AMALL 		|
+			AX_RX_CTL_AB 			| 
+			AX_RX_CTL_DROPCRCERR 	| 
+			((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RX_CTL, 1, 1, &reg16);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH, 1, 1, &reg8);
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
-	ret = ax_read_cmd(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
+	ret = fnr(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
 	if (ret < 0)
 		return ret;
 	reg8 &= 0xE0;
 	reg8 |= AX_MONITOR_MODE_RWMP;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
-
-	ret = ax_read_cmd(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+	ret = fnr(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
 				 2, 2, &reg16, 2);
 	if (ret < 0)
 		return ret;
 
 	reg16 &= ~AX_MEDIUM_GIGAMODE;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
 			    2, 2, &reg16);
 	if (ret < 0)
 		return ret;
 
 	reg16 |= AX_MEDIUM_GIGAMODE;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
 			    2, 2, &reg16);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0;
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_BFM_DATA, 1, 1, &reg8);
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_BFM_DATA, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
-	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_CDC_ECM_CTRL,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_CDC_ECM_CTRL,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	ax_set_tx_qlen(axdev);
 
-#ifdef ENABLE_AX88279
 #ifdef ENABLE_PTP_FUNC
 	ax88279_start_get_ts(axdev);
 #endif
+
+	return ret;
+}
+
+static int ax88279a_hw_init(struct ax_device *axdev, int no_pm)
+{
+	u16 reg16;
+	u8 reg8;
+	int ret;
+	usb_read_function fnr;
+	usb_write_function fnw;
+
+	if (!no_pm) {
+		fnr = ax_read_cmd;
+		fnw = ax_write_cmd;
+	} else {
+		fnr = ax_read_cmd_nopm;
+		fnw = ax_write_cmd_nopm;
+	}
+
+	ret = ax88179a_set_phy_power(axdev, true, no_pm);
+	if (ret < 0)
+		return ret;
+	msleep(250);
+
+	ax_mdio_write(axdev->netdev, axdev->mii.phy_id, 0,
+			    (BMCR_ANRESTART | BMCR_ANENABLE));
+	axdev->ipalign = 1;
+
+	ret = ax88179a_autodetach(axdev, no_pm);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 	AX_TXCOE_IP 	| 
+			AX_TXCOE_TCP 	| 
+			AX_TXCOE_UDP 	|
+	       	AX_TXCOE_TCPV6 	| 
+		   	AX_TXCOE_UDPV6;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_TXCOE_CTL, 1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+#ifdef ENABLE_COE
+	reg8 = AX_RXCOE_DEF_CSUM;
+#else
+	reg8 = 	AX_RXCOE_IP 	| 
+			AX_RXCOE_TCP 	| 
+			AX_RXCOE_UDP 	|
+	       	AX_RXCOE_TCPV6 	|
+			AX_RXCOE_UDPV6;
+#endif
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RXCOE_CTL, 1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8 = AX_MAC_EFF_EN;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BULK_OUT_CTRL,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg16 = 0;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0x04;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
+			   1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0x10;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+			   1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_FILTER)
+#else
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_FILTER)
+#endif		
+		reg8 |= AX_VLAN_CONTROL_VFE;
+		
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_RX)
+#else
+	if (axdev->netdev->features & NETIF_F_HW_VLAN_RX)
+#endif		
+		reg8 |= AX_VLAN_CONTROL_VSO;
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_VLAN_ID_CONTROL,
+			   1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0xff;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_INT_MASK,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_RX_DMA_CTL,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_BM_TX_DMA_CTL,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_ARC_CTRL,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_SWP_CTRL,
+			    1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+
+	reg8 = AX_TXHDR_CKSUM_EN;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_TX_HDR_CKSUM,
+				1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	reg16 = AX_RX_CTL_START 		| 
+			AX_RX_CTL_AP 			| 
+			AX_RX_CTL_AMALL 		|
+			AX_RX_CTL_AB 			| 
+			AX_RX_CTL_DROPCRCERR 	| 
+			((axdev->ipalign) ? (AX_RX_CTL_IPE) : 0);
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_RX_CTL, 1, 1, &reg16);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH, 1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	ret = fnr(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
+	if (ret < 0)
+		return ret;
+	reg8 &= 0xE0;
+	reg8 |= AX_MONITOR_MODE_RWMP;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	ret = fnr(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+				 2, 2, &reg16, 2);
+	if (ret < 0)
+		return ret;
+
+	reg16 &= ~AX_MEDIUM_GIGAMODE;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+			    2, 2, &reg16);
+	if (ret < 0)
+		return ret;
+
+	reg16 |= AX_MEDIUM_GIGAMODE;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+			    2, 2, &reg16);
+	if (ret < 0)
+		return ret;
+
+	reg8 = 0;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_BFM_DATA, 1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	ret = fnw(axdev, AX_ACCESS_MAC, AX88179A_CDC_ECM_CTRL,
+			   1, 1, &reg8);
+	if (ret < 0)
+		return ret;
+
+	ax_set_tx_qlen(axdev);
+
+#ifdef ENABLE_PTP_FUNC
+	ax88279_start_get_ts(axdev);
 #endif
 
 	return ret;
@@ -1459,6 +2085,7 @@ static int ax88179a_get_ether_link(struct ax_device *axdev)
 static int ax88179a_set_bulkin_setting(struct ax_device *axdev)
 {
 	struct ax_link_info *link_info = &axdev->link_info;
+	struct _ax_buikin_setting *bulkin_data = NULL;
 	u8 link_sts;
 	int index = 0, ret;
 
@@ -1491,20 +2118,25 @@ static int ax88179a_set_bulkin_setting(struct ax_device *axdev)
 		index = 0;
 		break;
 	};
+	if (axdev->udev->descriptor.bcdDevice == AX_BCDDEVICE_ID_179A)
+		bulkin_data = AX88179A_BULKIN_SIZE;
+	else
+		bulkin_data = AX88772D_BULKIN_SIZE;
 
 	if (axdev->coalesce == 0) {
-		u16 timer = *((u16 *)&AX88179A_BULKIN_SIZE[index].timer_l);
+		u16 timer = *((u16 *)&bulkin_data[index].timer_l);
 
 		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer);
 	} else {
 		u16 timer = ax88179a_usec_to_bin_timer(axdev);
 
-		AX88179A_BULKIN_SIZE[index].timer_l = timer & 0xFF;
-		AX88179A_BULKIN_SIZE[index].timer_h = (timer >> 8) & 0xFF;
+		bulkin_data[index].timer_l = timer & 0xFF;
+		bulkin_data[index].timer_h = (timer >> 8) & 0xFF;
 	}
-
+	ax_check_rx_biq_size(axdev, &bulkin_data[index]);
+	
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL,
-				5, 5, &AX88179A_BULKIN_SIZE[index]);
+				5, 5, &bulkin_data[index]);
 	if (ret < 0)
 		return ret;
 
@@ -1710,7 +2342,7 @@ static int ax88179a_link_reset(struct ax_device *axdev)
 
 	return 0;
 }
-#ifdef ENABLE_AX88279
+
 static int ax88279_get_ether_link(struct ax_device *axdev)
 {
 	ax88179a_get_ether_link(axdev);
@@ -1728,6 +2360,7 @@ static int ax88279_get_ether_link(struct ax_device *axdev)
 static int ax88279_set_bulkin_setting(struct ax_device *axdev)
 {
 	struct ax_link_info *link_info = &axdev->link_info;
+	struct _ax_buikin_setting *bulkin_data = NULL;
 	u8 link_sts;
 	int index = 7;
 	int ret;
@@ -1766,19 +2399,24 @@ static int ax88279_set_bulkin_setting(struct ax_device *axdev)
 		};
 	}
 
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		bulkin_data = AX88279A_BULKIN_SIZE;
+	else 
+		bulkin_data = AX88279_BULKIN_SIZE;
+
 	if (axdev->coalesce == 0) {
-		u16 timer = *((u16 *)&AX88279_BULKIN_SIZE[index].timer_l);
+		u16 timer = *((u16 *)&bulkin_data[index].timer_l);
 
 		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer);
 	} else {
 		u16 timer = ax88179a_usec_to_bin_timer(axdev);
 
-		AX88279_BULKIN_SIZE[index].timer_l = timer & 0xFF;
-		AX88279_BULKIN_SIZE[index].timer_h = (timer >> 8) & 0xFF;
+		bulkin_data[index].timer_l = timer & 0xFF;
+		bulkin_data[index].timer_h = (timer >> 8) & 0xFF;
 	}
-
+	ax_check_rx_biq_size(axdev, &bulkin_data[index]);
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL,
-				5, 5, &AX88279_BULKIN_SIZE[index]);
+				5, 5, &bulkin_data[index]);
 	if (ret < 0)
 		return ret;
 
@@ -1829,7 +2467,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 		return ret;
 
 	medium_mode = AX_MEDIUM_RECEIVE_EN | AX_MEDIUM_RXFLOW_CTRLEN |
-		      AX_MEDIUM_TXFLOW_CTRLEN;
+		      	  AX_MEDIUM_TXFLOW_CTRLEN;
 	reg8[0] = 0x28 | AX_NEW_PAUSE_EN;
 	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_NEW_PAUSE_CTRL,
 			   1, 1, reg8);
@@ -1855,7 +2493,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 
 		reg8[0] = 0x40;
 		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
-			  AX_MAC_LSO_ERR_EN;
+			  	  AX_MAC_LSO_ERR_EN;
 		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 					AX88179A_MAC_RX_DATA_CDC_CNT,
 					2, 2, reg8);
@@ -1896,7 +2534,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 
 		reg8[0] = 0x40;
 		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
-			  AX_MAC_LSO_ERR_EN;
+			  	  AX_MAC_LSO_ERR_EN;
 		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 					AX88179A_MAC_RX_DATA_CDC_CNT,
 					2, 2, reg8);
@@ -1938,7 +2576,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 
 		reg8[0] = 0x40;
 		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
-			  AX_MAC_LSO_ERR_EN;
+			  	  AX_MAC_LSO_ERR_EN;
 		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 					AX88179A_MAC_RX_DATA_CDC_CNT,
 					2, 2, reg8);
@@ -1977,7 +2615,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 
 		reg8[0] = 0xFA;
 		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
-			  AX_MAC_LSO_ERR_EN;
+			  	  AX_MAC_LSO_ERR_EN;
 		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 					AX88179A_MAC_RX_DATA_CDC_CNT,
 					2, 2, reg8);
@@ -2027,7 +2665,388 @@ static int ax88279_link_setting(struct ax_device *axdev)
 	return 0;
 }
 
-#ifdef ENABLE_QUEUE_PRIORITY
+static int ax88279a_link_setting(struct ax_device *axdev)
+{
+	struct ax_link_info *link_info = &axdev->link_info;
+	u16 medium_mode, reg16;
+	u8 reg8[3];
+	int ret;
+	u32 reg32;
+
+	reg16 = AX_RX_CTL_STOP;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
+	if (ret < 0)
+		return ret;
+
+	reg16 = 0;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH,
+				1, 1, &reg16);
+	if (ret < 0)
+		return ret;
+
+	reg8[0] = 0xA5;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+				AX88179A_MAC_CDC_DELAY_TX, 1, 1, reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8[0] = 0x10;
+	reg8[1] = 0x04;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+				AX_PAUSE_WATERLVL_HIGH, 2, 2, reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8[0] = 0;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+				AX88179A_ETH_TX_GAP, 1, 1, reg8);
+	if (ret < 0)
+		return ret;
+
+	reg8[0] = 0x07;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_EP5_EHR, 1, 1,
+				&reg8);
+	if (ret < 0)
+		return ret;
+
+	medium_mode = AX_MEDIUM_RECEIVE_EN | AX_MEDIUM_RXFLOW_CTRLEN |
+		      	  AX_MEDIUM_TXFLOW_CTRLEN;
+	reg8[0] = 0x28 | AX_NEW_PAUSE_EN;
+	ret = ax_write_cmd(axdev, AX_ACCESS_MAC, AX88179A_NEW_PAUSE_CTRL,
+			   1, 1, reg8);
+	if (ret < 0)
+		return ret;
+	switch (link_info->eth_speed) {
+	case ETHER_LINK_2500:
+#ifdef ENABLE_PTP_DELAY
+		axdev->delay = 2282;
+#endif
+		reg8[0] = 0x00;
+		reg8[1] = 0xF8;
+		reg8[2] = 0x07;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_TX_PAUSE_0, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x78;
+		reg8[1] = (AX_LSOFC_WCNT_7_ACCESS << 5);
+		reg8[2] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_STATUS_CDC, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x40;
+		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
+			  AX_MAC_LSO_ERR_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_DATA_CDC_CNT,
+					2, 2, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = AX_XGMII_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					 AX88179A_BFM_DATA, 1, 1, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = (0x1C) | AX_LSO_ENHANCE_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_LSO_ENHANCE_CTRL, 1, 1,
+					&reg8);
+		if (ret < 0)
+			return ret;
+
+		medium_mode |= AX_MEDIUM_GIGAMODE;
+		break;
+	case ETHER_LINK_1000:
+#ifdef ENABLE_PTP_DELAY
+		axdev->delay = 250;
+#endif
+		reg8[0] = 0x48;
+		reg8[1] = 0xF1;
+		reg8[2] = 0x3E;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					 AX88179A_MAC_TX_PAUSE_0, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x78;
+		reg8[1] = (AX_LSOFC_WCNT_7_ACCESS << 5);
+		reg8[2] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_STATUS_CDC, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x40;
+		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
+			  	  AX_MAC_LSO_ERR_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_DATA_CDC_CNT,
+					2, 2, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_BFM_DATA, 1, 1, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_LSO_ENHANCE_CTRL, 1, 1,
+					&reg8);
+		if (ret < 0)
+			return ret;
+
+
+		medium_mode |= AX_MEDIUM_GIGAMODE;
+		break;
+	case ETHER_LINK_100:
+#ifdef ENABLE_PTP_DELAY
+		axdev->delay = 288;
+#endif
+		
+		reg32 = 0x1e01f807;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x1010, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x200C, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x2020, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0x003f0102;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3004, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0x00f00000;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3020, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0x01000000;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3040, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0x00ff;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x2014, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+	
+		reg32 = 0x04040404;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3028, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+		
+
+		reg8[0] = 0x90;
+		reg8[1] = 0xE2;
+		reg8[2] = 0x7D;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					 AX88179A_MAC_TX_PAUSE_0, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x78;
+		reg8[1] = (AX_LSOFC_WCNT_7_ACCESS << 5);
+		reg8[2] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_STATUS_CDC, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0x40;
+		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
+			  	  AX_MAC_LSO_ERR_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_DATA_CDC_CNT,
+					2, 2, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_BFM_DATA, 1, 1, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_LSO_ENHANCE_CTRL, 1, 1,
+					&reg8);
+		if (ret < 0)
+			return ret;
+		break;
+	case ETHER_LINK_10:
+#ifdef ENABLE_PTP_DELAY
+		axdev->delay = 3948;
+#endif
+		reg8[0] = 0x90;
+		reg8[1] = 0xE2;
+		reg8[2] = 0x7D;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_TX_PAUSE_0, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0xFA;
+		reg8[1] = (AX_LSOFC_WCNT_7_ACCESS << 5);
+		reg8[2] = 0xFF;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_STATUS_CDC, 3, 3, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0xFA;
+		reg8[1] = AX_MAC_MIQFFCTRL_FORMAT | AX_MAC_MIQFFCTRL_DROP_CRC |
+			  	  AX_MAC_LSO_ERR_EN;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_RX_DATA_CDC_CNT,
+					2, 2, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_BFM_DATA, 1, 1, reg8);
+		if (ret < 0)
+			return ret;
+
+		reg8[0] = 0;
+		ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
+					AX88179A_MAC_LSO_ENHANCE_CTRL, 1, 1,
+					&reg8);
+		if (ret < 0)
+			return ret;
+		break;
+	default:
+		break;
+	};
+
+	ret = ax88279_set_bulkin_setting(axdev);
+	if (ret < 0)
+		return ret;
+
+	if (link_info->full_duplex)
+		medium_mode |= AX_MEDIUM_FULL_DUPLEX;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+				2, 2, &medium_mode);
+	if (ret < 0)
+		return ret;
+
+	axdev->rxctl |= AX_RX_CTL_START | AX_RX_CTL_AB | AX_RX_CTL_DROPCRCERR;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL,
+				2, 2, &axdev->rxctl);
+	if (ret < 0)
+		return ret;
+
+	/*Set multi queue*/
+	ax_read_cmd(axdev, AX_PBUS_A32, 0x3020, AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32, 0);
+	reg32 |= 0x04;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3020, AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	reg32 = 0x1B048090;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3024, AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	reg32 = 0x01;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x302C, AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	reg32 = 0x0;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x302C, AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	ax_read_cmd(axdev, AX_PBUS_A32, 0x2300, 0x0017, 4, &reg32, 0);
+	reg32 |= 0x0E;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x2300, 0x0017, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+#ifdef ENABLE_COE
+	reg32 = 0x7ffff;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x1034, 0x0107, 4, &reg32);
+	if (ret < 0)
+		return ret;
+#endif
+
+#ifdef ENABLE_QAV
+	ax_read_cmd(axdev, AX_PBUS_A32, 0x0000, 0x0015, 4, &reg32, 0);
+	reg32 |= 0x0000000F;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x0000, 0x0015, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	reg32 = 0x19191919;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x0004, 0x0015, 4, &reg32);
+	if (ret < 0)
+		return ret;
+#endif
+
+#ifdef ENABLE_RX_PREEMPT
+	reg32 = 0x1;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x0100, 0x0015, 4, &reg32);
+	if (ret < 0)
+		return ret;
+#endif
+	reg16 = AX_MAC_RX_PATH_READY | AX_MAC_TX_PATH_READY;
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH,
+				1, 1, &reg16);
+	if (ret < 0)
+		return ret;
+
+	if (link_info->eth_speed == ETHER_LINK_2500) {
+		ret = ax_read_cmd_nopm(axdev, AX_PBUS_A32, 0x020C, 0x0001, 4, &reg32, 0);
+		if (ret < 0)
+			return ret;
+
+		if ((reg32 & 0x0F) != 8)
+			goto out;
+
+		ret = ax_read_cmd_nopm(axdev, AX_PBUS_A32, 0x025C, 0x0003, 4, &reg32, 0);
+		if (ret < 0)
+			return ret;
+
+		if ((reg32 & 0x1F) != 9)
+			goto out;
+
+		ret = ax_read_cmd_nopm(axdev, AX_PBUS_A32, 0x0054, 0x0003, 4, &reg32, 0);
+		reg32 |= ((1 << 24) | (1 << 28));
+		ret = ax_write_cmd_nopm(axdev, AX_PBUS_A32, 0x0054, 0x0003, 4, &reg32);
+		reg32 &= ~((1 << 24) | (1 << 28));
+		ret = ax_write_cmd_nopm(axdev, AX_PBUS_A32, 0x0054, 0x0003, 4, &reg32);
+	}
+
+out:
+	return 0;
+}
+
 static int ax88279_queue_setting(struct ax_device *axdev)
 {
 	u8 reg8;
@@ -2118,7 +3137,6 @@ static int ax88279_queue_setting(struct ax_device *axdev)
 
 	return 0;
 }
-#endif
 
 static int ax88279_link_reset(struct ax_device *axdev)
 {
@@ -2133,7 +3151,7 @@ static int ax88279_link_reset(struct ax_device *axdev)
 		return ret;
 
 #ifdef ENABLE_QUEUE_PRIORITY
-	ret = axdev->driver_info->queue_priority(axdev);
+	ret = axdev->driver_info->queue_priority(axdev); /*TOCHECK*/
 	if (ret < 0)
 		return ret;
 #endif
@@ -2145,7 +3163,27 @@ static int ax88279_link_reset(struct ax_device *axdev)
 
 	return 0;
 }
+
+static int ax88279a_link_reset(struct ax_device *axdev)
+{
+	int ret;
+
+	ret = ax88279_get_ether_link(axdev);
+	if (ret < 0)
+		return ret;
+
+	ret = ax88279a_link_setting(axdev);
+	if (ret < 0)
+		return ret;
+
+#ifdef ENABLE_PTP_FUNC
+	if (axdev->driver_info->ptp_init)
+		axdev->driver_info->ptp_init(axdev);
 #endif
+
+	return 0;
+}
+
 inline void ax88179a_rx_checksum(struct sk_buff *skb, void *pkt_hdr)
 {
 	struct _179a_rx_pkt_header *hdr = (struct _179a_rx_pkt_header *)pkt_hdr;
@@ -2161,6 +3199,242 @@ inline void ax88179a_rx_checksum(struct sk_buff *skb, void *pkt_hdr)
 		skb->ip_summed = CHECKSUM_UNNECESSARY;
 }
 
+#ifdef ENABLE_RX_PREEMPT
+static void _print_raw(u8 *data, u32 length)
+{
+	int i;
+
+	for (i = 0; i < length; i += 8) {
+		printk("%02x %02x %02x %02x %02x %02x %02x %02x", data[i],
+		       data[i + 1], data[i + 2], data[i + 3], data[i + 4],
+		       data[i + 5], data[i + 6], data[i + 7]);
+	}
+}
+
+static void _print_complete_pb(struct pkt_buff *pb);
+
+static int ax_smd_index_compare(struct frag_pkt *curr, struct frag_pkt *prev)
+{
+	switch (curr->smd) {
+	case S:
+		return AX_DISCARD_N_ADD;
+	case C:
+		if (curr->smd_index == prev->smd_index)
+			return AX_ADD;
+		else
+			return AX_DISCARD;
+	default:
+		return 0;
+	}
+
+	return 0;
+}
+
+static int ax_frag_cnt_compare(struct frag_pkt *curr, struct frag_pkt *prev)
+{
+	u8 conv_index;
+
+	switch (prev->smd) {
+	case S:
+		if (curr->p_frag_cnt & FRAG0) {
+			return AX_ADD;
+		} else {
+			return AX_DISCARD;
+		}
+	case C:
+		conv_index = ((curr->p_frag_cnt) + IDX_OFF) % TOTAL_CNT;
+		if (!((prev->p_frag_cnt - conv_index) % TOTAL_CNT))
+			return AX_ADD;
+		else
+			return AX_DISCARD;
+	default:
+		return 0;
+	}
+
+	return 0;
+}
+
+static int check_pkt_if_valid(struct frag_pkt *pkt, struct pkt_buff *pb)
+{
+	switch (pkt->smd) {
+	case S:
+		if (!pb->len)
+			return AX_ADD;
+		else
+			return ax_smd_index_compare(pkt, pb->prev);
+	case C:
+		if (!pb->len)
+			return AX_DISCARD;
+		else
+			return ax_smd_index_compare(pkt, pb->prev) &
+					ax_frag_cnt_compare(pkt, pb->prev);
+	default:
+		return 0;
+	};
+
+	return 0;
+}
+
+static void ax_reset_pkt_buff(struct pkt_buff *pb)
+{
+	if (!pb || !pb->len)
+		return;
+
+	pb->len = 0;
+	pb->total_len = 0;
+	pb->index = -1;
+	pb->head = NULL;
+	pb->prev = NULL;
+}
+
+static void ax_update_pkt_buff(struct frag_pkt *curr, struct pkt_buff *pb)
+{
+	if (curr->drop) {
+		ax_reset_pkt_buff(pb);
+		return;
+	}
+
+	int ret = check_pkt_if_valid(curr, pb);
+
+	switch (ret) {
+	case AX_DISCARD:
+		ax_reset_pkt_buff(pb);
+		curr->drop = 1;
+		break;
+	case AX_DISCARD_N_ADD:
+		ax_reset_pkt_buff(pb);
+	case AX_ADD:
+		if (!pb->head) {
+			pb->head = curr;
+			pb->prev = curr;
+		} else {
+			pb->prev->next = curr;
+			curr->next = NULL;
+			pb->prev = curr;
+		}
+		pb->total_len += (curr->pkt_len);
+		pb->len++;
+		pb->index++;
+		break;
+	default:
+		break;
+	}
+}
+
+
+static unsigned char *ax_reassemble_skb(struct pkt_buff *pb)
+{
+    struct frag_pkt *tmp = pb->head;
+    int data_len = 0;
+    unsigned char *buffer, *buf_ptr;
+
+    buffer = kmalloc(pb->total_len, GFP_KERNEL);
+    if (!buffer) {
+        kfree(buffer);
+        goto next;
+    }
+    buf_ptr = buffer;
+	_print_complete_pb(pb);
+    while (tmp) {
+        data_len = tmp->pkt_len;
+        memcpy(buf_ptr, tmp->data, data_len);
+        buf_ptr += data_len;
+        tmp = tmp->next;
+    }
+    ax_reset_pkt_buff(pb);
+
+next:
+    return buffer;
+}
+
+static void ax_init_fpkt(struct frag_pkt *fpkt, struct _179a_rx_pkt_header *pkt_hdr)
+{
+	fpkt->p_pkt_type = pkt_hdr->p_pkt_type;
+	fpkt->p_frag_cnt = pkt_hdr->p_frag_cnt;
+
+	if (pkt_hdr->eorp) {
+		fpkt->smd = !(fpkt->p_frag_cnt) ? S : C;
+		fpkt->smd_index = ((fpkt->p_pkt_type) + IDX_OFF) % TOTAL_CNT;
+		fpkt->crcg = pkt_hdr->crcg;
+		fpkt->mcrcg = pkt_hdr->mcrcg;
+		if (unlikely(!(fpkt->crcg ^ fpkt->mcrcg))) {
+			fpkt->drop = 1;
+			return;
+		}
+		fpkt->preempted = 1;
+	} else {
+		fpkt->smd = !(fpkt->p_pkt_type) ? E :
+			    (fpkt->p_pkt_type == 9) ? V : R;
+		fpkt->crcg = 1;
+		fpkt->drop = 0;
+		fpkt->preempted = 0;
+	}
+}
+
+static void _print_complete_pb(struct pkt_buff *pb)
+{
+        if (!pb) {
+                printk(KERN_WARNING "print_complete_pb: pkt_buff is NULL\n");
+                return;
+        }
+
+	struct frag_pkt *tmp = pb->head;
+	unsigned char smd;
+	u8 smd_index, cnt, crcg, mcrcg;
+	
+	printk(KERN_DEBUG "*** complete [len: %d] ***\n", pb->len);
+
+	while (tmp) {		
+		smd = (tmp->smd == 1) ? 's' : 'c';
+		smd_index = tmp->smd_index;
+		cnt = tmp->p_frag_cnt;
+		crcg = tmp->crcg;
+		mcrcg = tmp->mcrcg;
+		printk(KERN_DEBUG " *packet %c%d, frag %d, mcrcg %d, crcg %d\n",
+		       smd, smd_index, cnt, mcrcg, crcg);
+		tmp = tmp->next;
+	}
+}
+#endif
+
+#ifdef ENABLE_COE
+static u8 static_DA_SA[] = { 0x00, 0x12, 0x34, 0x56, 0x78, 0x9A,
+			     0x00, 0x55, 0x55, 0x55, 0x55 };
+static void rx_coe_status_append(struct sk_buff *skb, u16 coe_status)
+{
+	if (!memcmp(skb->data, static_DA_SA, 6) ||
+	    !memcmp(&skb->data[6], &static_DA_SA[6], 5)) {
+		struct rx_coe_status *coe;
+		
+		skb_push(skb, 2);
+		coe = (struct rx_coe_status *)skb->data;
+		
+		coe->TCOMatch = (coe_status & 0x100) ? 1 : 0;
+		coe->NodeIdMatch = (coe_status & 0x200) ? 1 : 0;
+		coe->VlanPkt = (coe_status & 0x400) ? 1 : 0;
+		coe->RxOk = 1;
+		coe->RESV = 0;
+		coe->BMPkt = (coe_status & 0x8000) ? 1 : 0;
+		coe->L4Err = (coe_status & 0x1) ? 1 : 0;
+		coe->L3Err = (coe_status & 0x2) ? 1 : 0;
+		coe->L4PktType = (coe_status >> 2) & 0x7;
+		coe->L3PktType = (coe_status >> 5) & 0x3;
+		coe->CSErr = (coe_status & 0x80) ? 1 : 0;
+	}
+}
+
+static void ax_rx_coe(struct sk_buff *skb, u8 coe_status)
+{
+	skb->ip_summed = CHECKSUM_NONE;
+
+	if (coe_status & 0x01) //COE_ERROR
+		return;
+
+	if (coe_status & 0x30) //L4_TYPE
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+}
+#endif
+
 static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 			      int *work_done, int budget)
 {
@@ -2173,7 +3447,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 	struct _179a_rx_header *rx_header;
 	const u32 actual_length = desc->urb->actual_length;
 	u8 *rx_data;
-	u32 aa = 0, rx_hdroffset = 0;
+	u32 expected_hdr_offset = 0, rx_hdroffset = 0;
 	u16 pkt_count = 0;
 
 	rx_header = (struct _179a_rx_header *)
@@ -2182,8 +3456,9 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 
 	rx_hdroffset = rx_header->hdr_off;
 	pkt_count = rx_header->pkt_cnt;
-	aa = (actual_length - ((pkt_count + 1) * 8));
-	if (((aa != rx_hdroffset) && ((aa - rx_hdroffset) % 16) != 0) ||
+	expected_hdr_offset = (actual_length - ((pkt_count + 1) * 8));
+	if (((expected_hdr_offset != rx_hdroffset) && 
+		 ((expected_hdr_offset - rx_hdroffset) % 16) != 0) ||
 	    (rx_hdroffset >= desc->urb->actual_length) ||
 	    (pkt_count == 0)) {
 		desc->urb->actual_length = 0;
@@ -2232,18 +3507,20 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 		skb->truesize = skb->len + sizeof(struct sk_buff);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
-		if (pkt_hdr->vlan_ind) {
-				__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+		if (pkt_hdr->vlan_ind)
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
 						     pkt_hdr->vlan_tag & VLAN_VID_MASK);
-		}
 #else
-		if (pkt_hdr->vlan_ind) {
+		if (pkt_hdr->vlan_ind)
 			__vlan_hwaccel_put_tag(skb, pkt_hdr->vlan_tag & VLAN_VID_MASK);
-		}
 #endif
 #ifdef ENABLE_PTP_FUNC
 		if (pkt_hdr->PTP_ind) {
+#ifdef ENABLE_PTP_DELAY
+			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, axdev->delay);
+#else
 			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr);
+#endif
 			pkt_hdr += 2;
 		}
 #endif
@@ -2262,7 +3539,172 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 			__skb_queue_tail(&axdev->rx_queue, skb);
 		}
 find_next_rx:
-		rx_data += (pkt_len + 7) & 0x7FFF8;
+		rx_data += (pkt_len + ((axdev->ipalign) ? 2 : 0) + 7) & 0x7FFF8;
+		pkt_hdr++;
+	}
+}
+
+static void ax88279a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
+			      int *work_done, int budget)
+{
+#ifndef ENABLE_RX_TASKLET
+	struct napi_struct *napi = &axdev->napi;
+#endif
+	struct net_device *netdev = axdev->netdev;
+	struct net_device_stats *stats = ax_get_stats(netdev);
+	struct _179a_rx_pkt_header *pkt_hdr;
+	struct _179a_rx_header *rx_header;
+	const u32 actual_length = desc->urb->actual_length;
+	u8 *rx_data;
+#ifdef ENABLE_RX_PREEMPT 
+	u8 *skb_tmp_data = NULL;
+	int i = 0;
+#endif
+	u32 expected_hdr_offset = 0, rx_hdroffset = 0;
+	u16 pkt_count = 0;
+
+	rx_header = (struct _179a_rx_header *)
+		(((u8 *)desc->head) + actual_length - AX88179A_RX_HEADER_SIZE);
+	le64_to_cpus((u64 *)rx_header);
+
+	rx_hdroffset = rx_header->hdr_off;
+	pkt_count = rx_header->pkt_cnt;
+	expected_hdr_offset = (actual_length - ((pkt_count + 1) * 8));
+	if (((expected_hdr_offset != rx_hdroffset) && 
+		 ((expected_hdr_offset - rx_hdroffset) % 16) != 0) ||
+	    (rx_hdroffset >= desc->urb->actual_length) ||
+	    (pkt_count == 0)) {
+		desc->urb->actual_length = 0;
+		stats->rx_length_errors++;
+		return;
+	}
+
+	pkt_hdr = (struct _179a_rx_pkt_header *)
+			(((u8 *)desc->head) + rx_header->hdr_off);
+
+#ifdef ENABLE_RX_PREEMPT 
+	rx_data = (u8 *)desc->head;
+	skb_tmp_data = rx_data;
+#else
+	rx_data = desc->head;
+#endif
+	while (pkt_count--) {
+		struct sk_buff *skb;
+#ifdef ENABLE_RX_PREEMPT
+		struct frag_pkt *fpkt = &desc->fpkt[i];
+#endif
+		u32 pkt_len = 0;
+
+		le64_to_cpus((u64 *)pkt_hdr);
+
+		if (!pkt_hdr->RxOk) {
+			stats->rx_crc_errors++;
+			if (!(netdev->features & NETIF_F_RXALL))
+				goto find_next_rx;
+		}
+
+		if (pkt_hdr->drop) {
+			stats->rx_dropped++;
+			if (!(netdev->features & NETIF_F_RXALL))
+				goto find_next_rx;
+		}
+
+		pkt_len = (u32)(pkt_hdr->length & 0x7FFF) - ((axdev->ipalign) ? 2 : 0);
+
+#ifdef ENABLE_RX_PREEMPT 
+		fpkt->pkt_len = pkt_len;
+		ax_init_fpkt(fpkt, pkt_hdr);
+
+		if (fpkt->preempted) {
+			fpkt->data = (unsigned char *)rx_data;
+			fpkt->pkt_len = pkt_len;
+			printk("preempted: 0x%x | smd: 0x%x | p_frag_cnt: 0x%x\n", 
+				fpkt->preempted, fpkt->smd, fpkt->p_frag_cnt);
+			ax_update_pkt_buff(fpkt, axdev->pb);
+		}
+
+		if (fpkt->drop) {
+			_print_raw((u8 *)rx_data, 64);
+			goto find_next_rx;
+		}
+		
+		if (fpkt->mcrcg)
+			goto find_next_rx;
+
+		if (fpkt->preempted && fpkt->crcg) {
+			pkt_len = axdev->pb->total_len;
+			skb_tmp_data = ax_reassemble_skb(axdev->pb);
+		}
+#endif
+
+#ifdef ENABLE_RX_TASKLET
+		skb = netdev_alloc_skb(netdev, pkt_len);
+#else
+		skb = napi_alloc_skb(napi, pkt_len);
+#endif
+		if (!skb) {
+			stats->rx_dropped++;
+			goto find_next_rx;
+		}
+
+		skb_put(skb, pkt_len);
+#ifdef ENABLE_RX_PREEMPT 
+		memcpy(skb->data, skb_tmp_data, pkt_len);
+#else
+		memcpy(skb->data, rx_data + ((axdev->ipalign) ? 2 : 0), pkt_len);
+#endif
+#ifdef ENABLE_COE
+		rx_coe_status_append(skb, *(u16*)pkt_hdr);
+		pkt_len = skb->len;
+#endif
+		ax88179a_rx_checksum(skb, pkt_hdr);
+
+		skb->truesize = skb->len + sizeof(struct sk_buff);
+
+#ifndef ENABLE_COE 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+		if (pkt_hdr->vlan_ind)
+			__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+						     pkt_hdr->vlan_tag & VLAN_VID_MASK);
+#else
+		if (pkt_hdr->vlan_ind)
+			__vlan_hwaccel_put_tag(skb, pkt_hdr->vlan_tag & VLAN_VID_MASK);
+#endif
+#endif
+#ifdef ENABLE_PTP_FUNC
+		if (pkt_hdr->PTP_ind) {
+#ifdef ENABLE_PTP_DELAY
+			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, axdev->delay);
+#else
+			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr);
+#endif
+			pkt_hdr += 2;
+		}
+#endif
+		skb->protocol = eth_type_trans(skb, netdev);
+		if (*work_done < budget) {
+#ifdef ENABLE_RX_TASKLET
+			netif_receive_skb(skb);
+#else
+			napi_gro_receive(napi, skb);
+#endif
+			*work_done += 1;
+			stats->rx_packets++;
+#ifdef ENABLE_RX_PREEMPT 
+			stats->rx_bytes += axdev->pb->total_len;
+#else
+			stats->rx_bytes += pkt_len;
+#endif
+		} else {
+			__skb_queue_tail(&axdev->rx_queue, skb);
+		}
+
+find_next_rx:
+#ifdef ENABLE_RX_PREEMPT 
+		skb_tmp_data += (pkt_len + 7) & 0x7FFF8;
+		i++;
+#endif
+		rx_data += (pkt_len + ((axdev->ipalign) ? 2 : 0) + 7) & 0x7FFF8;
 		pkt_hdr++;
 	}
 }
@@ -2271,13 +3713,13 @@ static int ax88179a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 {
 	struct sk_buff_head skb_head, *tx_queue;
 	struct net_device_stats *stats = &axdev->netdev->stats;
-	int remain, ret;
-#ifdef ENABLE_QUEUE_PRIORITY
-	int endpoint = (desc->q_index == 1)?5:3;
-#else
-	int endpoint = 3;
-#endif
+	int remain, ret, endpoint;
 	u8 *tx_data;
+#ifdef ENABLE_QUEUE_PRIORITY
+	endpoint = (desc->q_index == 1) ? 5 : 3;
+#else
+	endpoint = 3;
+#endif
 
 #ifdef ENABLE_QUEUE_PRIORITY
 	tx_queue = &axdev->tx_queue[desc->q_index];
@@ -2317,10 +3759,11 @@ static int ax88179a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		tx_hdr->max_seg_size = skb_shinfo(skb)->gso_size;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
 		if ((axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_TX) &&
+			(vlan_get_tag(skb, &tci) >= 0)) {
 #else
 		if ((axdev->netdev->features & NETIF_F_HW_VLAN_TX) &&
-#endif		   
 			(vlan_get_tag(skb, &tci) >= 0)) {
+#endif		   
 			tx_hdr->vlan_tag = 1;
 			tx_hdr->vlan_info = tci;
 		}
@@ -2392,12 +3835,163 @@ static int ax88179a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 	return 0;
 }
 
+static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
+{
+	struct sk_buff_head skb_head, *tx_queue;
+	struct net_device_stats *stats = &axdev->netdev->stats;
+	int remain, ret, endpoint;
+	u8 *tx_data;
+#ifdef ENABLE_NORMAL_PKT_PTP 
+	static u8 sequence_id = 0;
+#endif
+	endpoint = desc->q_index * 2 + 3;
+
+	tx_queue = &axdev->tx_queue[desc->q_index];
+
+	__skb_queue_head_init(&skb_head);
+	spin_lock(&tx_queue->lock);
+	skb_queue_splice_init(tx_queue, &skb_head);
+	spin_unlock(&tx_queue->lock);
+
+	tx_data = desc->head;
+	desc->skb_num = 0;
+	desc->skb_len = 0;
+	remain = axdev->tx_casecade_size;
+
+	while (remain >= (ETH_ZLEN + AX88179A_TX_HEADER_SIZE)) {
+		struct sk_buff *skb;
+		struct _179a_tx_pkt_header *tx_hdr;
+		u16 tci = 0;
+
+		skb = __skb_dequeue(&skb_head);
+		if (!skb)
+			break;
+
+		if ((skb->len + AX88179A_TX_HEADER_SIZE) > remain &&
+		    (skb_shinfo(skb)->gso_size == 0)) {
+			__skb_queue_head(&skb_head, skb);
+			break;
+		}
+
+		tx_hdr = (struct _179a_tx_pkt_header *)tx_data;
+		memset(tx_hdr, 0, AX88179A_TX_HEADER_SIZE);
+		tx_hdr->length = (skb->len & 0x1FFFFF);
+		tx_hdr->checksum = AX88179A_TX_HERDER_CHKSUM(tx_hdr->length);
+#ifndef ENABLE_NORMAL_PKT_PTP 
+		tx_hdr->max_seg_size = skb_shinfo(skb)->gso_size;
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+		if ((axdev->netdev->features & NETIF_F_HW_VLAN_CTAG_TX) &&
+			(vlan_get_tag(skb, &tci) >= 0)) {
+#else
+		if ((axdev->netdev->features & NETIF_F_HW_VLAN_TX) &&
+			(vlan_get_tag(skb, &tci) >= 0)) {
+#endif
+			tx_hdr->vlan_tag = 1;
+			tx_hdr->vlan_info = tci;
+		}
+
+		cpu_to_le64s((u64 *)tx_data);
+		tx_data += AX88179A_TX_HEADER_SIZE;
+
+		if (skb_copy_bits(skb, 0, tx_data, skb->len) < 0) {
+			stats->tx_dropped += skb_shinfo(skb)->gso_segs ?: 1;
+			dev_kfree_skb_any(skb);
+			continue;
+		}
+
+		tx_data = __tx_buf_align((void *)(tx_data + skb->len),
+					 axdev->tx_align_len);
+		desc->skb_len += skb->len;
+		desc->skb_num += skb_shinfo(skb)->gso_segs ?: 1;
+#ifdef ENABLE_PTP_FUNC
+		if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
+			skb_queue_tail(&axdev->tx_timestamp, skb);
+			set_bit(AX_TX_TIMESTAMPS, &desc->flags);
+		} else {
+#ifdef ENABLE_NORMAL_PKT_PTP 
+			tx_hdr->normal_pkt_enable = 1;
+			tx_hdr->normal_pkt_index = sequence_id;
+
+			if (sequence_id == 0)
+				sequence_id = 1;
+			else
+				sequence_id++;
+#endif
+			dev_kfree_skb_any(skb);
+		}
+#else
+		dev_kfree_skb_any(skb);
+#endif
+
+#ifndef ENABLE_NORMAL_PKT_PTP 
+		if (tx_hdr->max_seg_size)
+			break;
+#endif
+
+		remain = axdev->tx_casecade_size -
+			 (int)((void *)tx_data - desc->head);
+	}
+
+	if (!skb_queue_empty(&skb_head)) {
+		spin_lock(&tx_queue->lock);
+		skb_queue_splice(&skb_head, tx_queue);
+		spin_unlock(&tx_queue->lock);
+	}
+
+	netif_tx_lock(axdev->netdev);
+
+	if (__netif_subqueue_stopped(axdev->netdev, desc->q_index) &&
+	    skb_queue_len(tx_queue) < axdev->tx_qlen) {
+	    
+		netif_wake_subqueue(axdev->netdev, desc->q_index);
+
+	}
+	netif_tx_unlock(axdev->netdev);
+
+	ret = usb_autopm_get_interface_async(axdev->intf);
+	if (ret < 0)
+		return ret;
+
+	usb_fill_bulk_urb(desc->urb, axdev->udev,
+			  usb_sndbulkpipe(axdev->udev, endpoint),
+			  desc->head, (int)(tx_data - (u8 *)desc->head),
+			  (usb_complete_t)ax_write_bulk_callback, desc);
+
+	if (desc->skb_len == 0)
+		return -1;
+
+	ret = usb_submit_urb(desc->urb, GFP_ATOMIC);
+	if (ret < 0)
+		usb_autopm_put_interface_async(axdev->intf);
+
+	if (endpoint == 3)
+		axdev->ep3_count++;
+	else if (endpoint == 5)
+		axdev->ep5_count++;
+#ifndef ENABLE_QUEUE_PRIORITY
+	else if (endpoint == 7)
+		axdev->ep7_count++;
+	else if (endpoint == 9)
+		axdev->ep9_count++;
+	axdev->ep_total_count++;
+#endif
+
+	return 0;
+}
+
 static int ax88179a_system_suspend(struct ax_device *axdev)
 {
-#ifdef ENABLE_AX88279
 #ifdef ENABLE_PTP_FUNC
 	ax88279_stop_get_ts(axdev);
 #endif
+
+#ifdef ENABLE_SUSPEND_LP
+	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 0, 
+				EPHY_LOW_POWER_EN, 0, NULL);
+#else
+	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 0, 0, 0, NULL);
 #endif
 
 	return 0;
@@ -2408,13 +4002,13 @@ static int ax88179a_system_resume(struct ax_device *axdev)
 	int ret;
 
 	if (!ax88179a_check_phy_power(axdev))
-		ax88179a_set_phy_power(axdev, true);
+		ax88179a_set_phy_power(axdev, true, 1);
 
 	ret = ax_write_cmd_nopm(axdev, AX_FW_MODE, AX_FW_MODE_179A, 0, 0, NULL);
 	if (ret < 0)
 		return ret;
 
-	axdev->driver_info->hw_init(axdev);
+	axdev->driver_info->hw_init(axdev, 1);
 
 	return 0;
 }
@@ -2424,19 +4018,18 @@ static int ax88179a_runtime_suspend(struct ax_device *axdev)
 	u16 reg16, medium_mode;
 	u8 reg8, loop = 100;
 
-#ifdef ENABLE_AX88279
 #ifdef ENABLE_PTP_FUNC
 	ax88279_stop_get_ts(axdev);
 #endif
-#endif
-	while(loop--) {
+
+	while (loop--) {
 		ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, 0x57, 2, 2, &reg16, 0);
 		if (reg16 >= 0x11FF)
 			break;
 		mdelay(10);
 	};
 	loop = 100;
-	while(loop--) {
+	while (loop--) {
 		u8 reg[4];
 		ax_read_cmd_nopm(axdev, AX88179A_USB_DC, 0x1230, 4, 4, reg, 0);
 		if (reg[2] & 0x02)
@@ -2465,7 +4058,7 @@ static int ax88179a_runtime_suspend(struct ax_device *axdev)
 	reg16 = AX_RX_CTL_START | AX_RX_CTL_AB;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
 
-	ax_write_cmd_nopm(axdev, AX8179A_WAKEUP_SETTING, 0, 0, 0, NULL);
+	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 0, 0, 0, NULL);
 
 	reg16 = AX_RX_CTL_AB;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
@@ -2476,7 +4069,7 @@ static int ax88179a_runtime_suspend(struct ax_device *axdev)
 	ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 0);
 	reg8 &= 0xE0;
 	reg8 |= AX_MONITOR_MODE_RWLC | AX_MONITOR_MODE_RWMP |
-		AX_MONITOR_MODE_PMETYPE;
+			AX_MONITOR_MODE_PMETYPE;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 
 	medium_mode |= AX_MEDIUM_RECEIVE_EN;
@@ -2493,7 +4086,7 @@ static int ax88179a_runtime_resume(struct ax_device *axdev)
 	u8 reg8;
 
 	if (!ax88179a_check_phy_power(axdev))
-		ax88179a_set_phy_power(axdev, true);
+		ax88179a_set_phy_power(axdev, true, 1);
 
 	ax_write_cmd_nopm(axdev, AX_FW_MODE, AX_FW_MODE_179A, 0, 0, NULL);
 
@@ -2535,96 +4128,117 @@ static int ax88179a_runtime_resume(struct ax_device *axdev)
 	reg8 = AX_MAC_RX_PATH_READY | AX_MAC_TX_PATH_READY;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX88179A_MAC_PATH, 1, 1, &reg8);
 
-	ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
-	reg8 &= 0xE0;
-	reg8 |= AX_MONITOR_MODE_RWMP;
-	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
-
 	if (link_info->eth_speed == ETHER_LINK_1000)
 		medium_mode |= AX_MEDIUM_GIGAMODE;
 	if (link_info->full_duplex)
 		medium_mode |= AX_MEDIUM_FULL_DUPLEX;
 
 	medium_mode |= AX_MEDIUM_RECEIVE_EN | AX_MEDIUM_RXFLOW_CTRLEN |
-		       AX_MEDIUM_TXFLOW_CTRLEN;
+		       	   AX_MEDIUM_TXFLOW_CTRLEN;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE, 2, 2,
 			  &medium_mode);
 
 	return 0;
 }
 
-#ifdef ENABLE_AX88279
-const struct driver_info ax88279_info = {
-	.bind		= ax88179a_bind,
-	.unbind		= ax88179a_unbind,
-	.hw_init	= ax88179a_hw_init,
-	.stop		= ax88179a_stop,
-#ifdef ENABLE_QUEUE_PRIORITY
-	.queue_priority	= ax88279_queue_setting,
-#endif
-	.link_reset	= ax88279_link_reset,
-	.link_setting	= ax88279_link_setting,
-	.rx_fixup	= ax88179a_rx_fixup,
-	.tx_fixup	= ax88179a_tx_fixup,
-	.system_suspend = ax88179a_system_suspend,
-	.system_resume	= ax88179a_system_resume,
-	.runtime_suspend = ax88179a_runtime_suspend,
-	.runtime_resume	= ax88179a_runtime_resume,
+const struct driver_info ax88279a_info = {
+	.bind				= ax88179a_bind,
+	.unbind				= ax88179a_unbind,
+	.hw_init			= ax88279a_hw_init,
+	.stop				= ax88179a_stop,
+	.queue_priority		= ax88279_queue_setting,
+	.link_reset			= ax88279a_link_reset,
+	.link_setting		= ax88279a_link_setting,
+	.rx_fixup			= ax88279a_rx_fixup,
+	.tx_fixup			= ax88279a_tx_fixup,
+	.system_suspend 	= ax88179a_system_suspend,
+	.system_resume		= ax88179a_system_resume,
+	.runtime_suspend 	= ax88179a_runtime_suspend,
+	.runtime_resume		= ax88179a_runtime_resume,
 #ifdef ENABLE_PTP_FUNC
-	.ptp_pps_ctrl = ax88279_ptp_pps_ctrl,
-	.ptp_init	= ax88279_ptp_init,
-	.ptp_remove	= ax88279_ptp_remove,
+	.ptp_pps_ctrl 		= ax88279a_ptp_pps_ctrl,
+	.ptp_init			= ax88279a_ptp_init,
+	.ptp_remove			= ax88279_ptp_remove,
 #endif
-	.napi_weight	= AX88279_NAPI_WEIGHT,
-	.buf_rx_size	= AX88279_BUF_RX_SIZE,
+	.napi_weight		= AX88279_NAPI_WEIGHT,
+	.buf_rx_size		= AX88279_BUF_RX_SIZE,
+	.tx_num				= 4,
 };
-#endif
-const struct driver_info ax88179a_info = {
-	.bind		= ax88179a_bind,
-	.unbind		= ax88179a_unbind,
-	.hw_init	= ax88179a_hw_init,
-	.stop		= ax88179a_stop,
+
+const struct driver_info ax88279_info = {
+	.bind				= ax88179a_bind,
+	.unbind				= ax88179a_unbind,
+	.hw_init			= ax88179a_hw_init,
+	.stop				= ax88179a_stop,
 #ifdef ENABLE_QUEUE_PRIORITY
-	.queue_priority	= ax88179a_queue_priority,
+	.queue_priority		= ax88279_queue_setting,
 #endif
-	.link_reset	= ax88179a_link_reset,
-	.link_setting	= ax88179a_link_setting,
-	.rx_fixup	= ax88179a_rx_fixup,
-	.tx_fixup	= ax88179a_tx_fixup,
-	.system_suspend = ax88179a_system_suspend,
-	.system_resume	= ax88179a_system_resume,
-	.runtime_suspend = ax88179a_runtime_suspend,
-	.runtime_resume	= ax88179a_runtime_resume,
+	.link_reset			= ax88279_link_reset,
+	.link_setting		= ax88279_link_setting,
+	.rx_fixup			= ax88179a_rx_fixup,
+	.tx_fixup			= ax88179a_tx_fixup,
+	.system_suspend 	= ax88179a_system_suspend,
+	.system_resume		= ax88179a_system_resume,
+	.runtime_suspend 	= ax88179a_runtime_suspend,
+	.runtime_resume		= ax88179a_runtime_resume,
 #ifdef ENABLE_PTP_FUNC
-	.ptp_pps_ctrl = ax88179a_ptp_pps_ctrl,
-	.ptp_init	= ax88179a_ptp_init,
-	.ptp_remove	= ax88179a_ptp_remove,
+	.ptp_pps_ctrl 		= ax88279_ptp_pps_ctrl,
+	.ptp_init			= ax88279_ptp_init,
+	.ptp_remove			= ax88279_ptp_remove,
 #endif
-	.napi_weight	= AX88179A_NAPI_WEIGHT,
-	.buf_rx_size	= AX88179A_BUF_RX_SIZE,
+	.napi_weight		= AX88279_NAPI_WEIGHT,
+	.buf_rx_size		= AX88279_BUF_RX_SIZE,
+	.tx_num				= 1,
+};
+
+const struct driver_info ax88179a_info = {
+	.bind				= ax88179a_bind,
+	.unbind				= ax88179a_unbind,
+	.hw_init			= ax88179a_hw_init,
+	.stop				= ax88179a_stop,
+#ifdef ENABLE_QUEUE_PRIORITY
+	.queue_priority		= ax88179a_queue_priority,
+#endif
+	.link_reset			= ax88179a_link_reset,
+	.link_setting		= ax88179a_link_setting,
+	.rx_fixup			= ax88179a_rx_fixup,
+	.tx_fixup			= ax88179a_tx_fixup,
+	.system_suspend 	= ax88179a_system_suspend,
+	.system_resume		= ax88179a_system_resume,
+	.runtime_suspend 	= ax88179a_runtime_suspend,
+	.runtime_resume		= ax88179a_runtime_resume,
+#ifdef ENABLE_PTP_FUNC
+	.ptp_pps_ctrl 		= ax88179a_ptp_pps_ctrl,
+	.ptp_init			= ax88179a_ptp_init,
+	.ptp_remove			= ax88179a_ptp_remove,
+#endif
+	.napi_weight		= AX88179A_NAPI_WEIGHT,
+	.buf_rx_size		= AX88179A_BUF_RX_SIZE,
+	.tx_num				= 1,
 };
 
 const struct driver_info ax88772d_info = {
-	.bind		= ax88179a_bind,
-	.unbind		= ax88179a_unbind,
-	.hw_init	= ax88179a_hw_init,
-	.stop		= ax88179a_stop,
+	.bind				= ax88179a_bind,
+	.unbind				= ax88179a_unbind,
+	.hw_init			= ax88179a_hw_init,
+	.stop				= ax88179a_stop,
 #ifdef ENABLE_QUEUE_PRIORITY
-	.queue_priority	= ax88179a_queue_priority,
+	.queue_priority		= ax88179a_queue_priority,
 #endif
-	.link_reset	= ax88179a_link_reset,
-	.link_setting	= ax88179a_link_setting,
-	.rx_fixup	= ax88179a_rx_fixup,
-	.tx_fixup	= ax88179a_tx_fixup,
-	.system_suspend = ax88179a_system_suspend,
-	.system_resume	= ax88179a_system_resume,
-	.runtime_suspend = ax88179a_runtime_suspend,
-	.runtime_resume	= ax88179a_runtime_resume,
+	.link_reset			= ax88179a_link_reset,
+	.link_setting		= ax88179a_link_setting,
+	.rx_fixup			= ax88179a_rx_fixup,
+	.tx_fixup			= ax88179a_tx_fixup,
+	.system_suspend 	= ax88179a_system_suspend,
+	.system_resume		= ax88179a_system_resume,
+	.runtime_suspend 	= ax88179a_runtime_suspend,
+	.runtime_resume		= ax88179a_runtime_resume,
 #ifdef ENABLE_PTP_FUNC
-	.ptp_pps_ctrl = ax88179a_ptp_pps_ctrl,
-	.ptp_init	= ax88179a_ptp_init,
-	.ptp_remove	= ax88179a_ptp_remove,
+	.ptp_pps_ctrl 		= ax88179a_ptp_pps_ctrl,
+	.ptp_init			= ax88179a_ptp_init,
+	.ptp_remove			= ax88179a_ptp_remove,
 #endif
-	.napi_weight	= AX88179A_NAPI_WEIGHT,
-	.buf_rx_size	= AX88179A_BUF_RX_SIZE,
+	.napi_weight		= AX88179A_NAPI_WEIGHT,
+	.buf_rx_size		= AX88179A_BUF_RX_SIZE,
+	.tx_num				= 1,
 };

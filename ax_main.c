@@ -51,6 +51,8 @@ static int
 ax_submit_rx(struct ax_device *netdev, struct rx_desc *desc, gfp_t mem_flags);
 static void ax_set_carrier(struct ax_device *axdev);
 
+static int eth_speed[] = {0, 10, 100, 1000, 2500};
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
 void ax_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info)
 {
@@ -68,7 +70,7 @@ void ax_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *info)
 static size_t ax_strscpy(char *dest, const char *src, size_t size)
 {
 	size_t len = strnlen(src, size) + 1;
-	if(len > size) {
+	if (len > size) {
 		if (size)
 			dest[0] = '\0';
 		return 0;
@@ -152,9 +154,7 @@ int ax_get_link_ksettings(struct net_device *netdev,
 
 	mii_ethtool_get_link_ksettings(&axdev->mii, cmd);
 
-#ifdef ENABLE_AX88279
-	//printk("============AX88279==========");
-	if (axdev->chip_version == AX_VERSION_AX88279) {
+	if (axdev->chip_version >= AX_VERSION_AX88279) {
 #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 			 cmd->link_modes.supported, 1);
@@ -179,7 +179,6 @@ int ax_get_link_ksettings(struct net_device *netdev,
 		if (axdev->intr_link_info.eth_speed == ETHER_LINK_2500)
 			cmd->base.speed = SPEED_2500;
 	}
-#endif
 
 	mutex_unlock(&axdev->control);
 
@@ -265,96 +264,32 @@ int ax_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wolinfo)
 	if (ret < 0)
 		return ret;
 
-#ifdef ENABLE_AX88279
 	ret = ax_set_s5_wol(axdev, reg8);
 	if (ret < 0)
 		return ret;
-#endif
 
 	return 0;
 }
 
-#ifdef ENABLE_AX88279
 int ax_set_s5_wol(struct ax_device *axdev, u8 enable) 
 {
 	int ret = 0;
 	
 	if (axdev->chip_version == AX_VERSION_AX88279) {
-		ret = ax_write_cmd(axdev, AX8179A_WAKEUP_SETTING, 8,
+#ifdef ENABLE_SUSPEND_LP
+		ret = ax_write_cmd(axdev, AX88179A_WAKEUP_SETTING, 8,
 			((enable & (AX_MONITOR_MODE_RWLC | AX_MONITOR_MODE_RWMP)) ? 
-			(S5_WOL_EN | S5_WOL_LOW_POWER | 0x8000) : 0x8000), 0, NULL);
+			 (EPHY_LOW_POWER_EN | S5_WOL_EN | S5_WOL_LOW_POWER | 0x8000) :
+			 0x8000), 0, NULL);
+#else
+		ret = ax_write_cmd(axdev, AX88179A_WAKEUP_SETTING, 8,
+			((enable & (AX_MONITOR_MODE_RWLC | AX_MONITOR_MODE_RWMP)) 	?
+			 (S5_WOL_EN | S5_WOL_LOW_POWER | 0x8000) 					:
+			 0x8000), 0, NULL);
+#endif
 	}
 	
 	return ret;
-}
-#endif
-
-static const char ax_gstrings[][ETH_GSTRING_LEN] = {
-	"tx_packets",
-	"rx_packets",
-	"tx_bytes",
-	"rx_bytes",
-	"tx_dropped",
-	"rx_length_errors",
-	"rx_crc_errors",
-	"rx_dropped",
-	"buikin_complete",
-	"bulkin_error",
-	"bulkout_complete",
-	"bulkout_error",
-	"bulkint_complete",
-	"bulkint_error",
-#ifdef ENABLE_QUEUE_PRIORITY
-	"ep5_count",
-	"ep3_count",
-#endif
-};
-
-int ax_get_sset_count(struct net_device *netdev, int sset)
-{
-	switch (sset) {
-	case ETH_SS_STATS:
-		return ARRAY_SIZE(ax_gstrings);
-	default:
-		return -EOPNOTSUPP;
-	}
-}
-
-void ax_get_strings(struct net_device *netdev, u32 stringset, u8 *data)
-{
-
-	switch (stringset) {
-	case ETH_SS_STATS:
-		memcpy(data, ax_gstrings, sizeof(ax_gstrings));
-		break;
-	}
-}
-
-void ax_get_ethtool_stats(struct net_device *netdev,
-			  struct ethtool_stats *stats, u64 *data)
-{
-	struct net_device_stats *net_stats = ax_get_stats(netdev);
-	struct ax_device *axdev = netdev_priv(netdev);
-	u64 *temp = data;
-
-	*temp++ = net_stats->tx_packets;
-	*temp++ = net_stats->rx_packets;
-	*temp++ = net_stats->tx_bytes;
-	*temp++ = net_stats->rx_bytes;
-	*temp++ = net_stats->tx_dropped;
-	*temp++ = net_stats->rx_length_errors;
-	*temp++ = net_stats->rx_crc_errors;
-	*temp++ = net_stats->rx_dropped;
-	*temp++ = axdev->bulkin_complete;
-	*temp++ = axdev->bulkin_error;
-	*temp++ = axdev->bulkout_complete;
-	*temp++ = axdev->bulkout_error;
-	*temp++ = axdev->bulkint_complete;
-	*temp++ = axdev->bulkint_error;
-#ifdef ENABLE_QUEUE_PRIORITY
-	*temp++ = axdev->ep5_count;
-	*temp++ = axdev->ep3_count;
-#endif
 }
 
 void ax_get_pauseparam(struct net_device *netdev,
@@ -429,6 +364,27 @@ out:
 	usb_autopm_put_interface(axdev->intf);
 
 	return ret;
+}
+
+void ax_check_rx_biq_size(struct ax_device *axdev, 
+				struct _ax_buikin_setting *ax_bulkin_set) 
+{
+	u16 bulkin_size;
+	u16 rx_buf = axdev->rx_buf / KB_SIZE;
+
+	bulkin_size = (ax_bulkin_set->size > 3) ? 
+				  (ax_bulkin_set->size * 2) : 4;
+	
+	if (bulkin_size >= rx_buf) {
+		if (rx_buf <= 4) {
+			ax_bulkin_set->ctrl &= ~4;
+			ax_bulkin_set->ctrl |= 2;
+			ax_bulkin_set->timer_l = 0;
+			ax_bulkin_set->timer_h = 0;
+		} else {
+			ax_bulkin_set->size = (rx_buf / 2) - 1;
+		}
+	}
 }
 
 int ax_get_regs_len(struct net_device *netdev)
@@ -550,12 +506,12 @@ static int __ax_write_cmd_nopm(struct ax_device *axdev, u8 cmd, u8 reqtype,
 }
 
 static int __asix_read_cmd(struct ax_device *axdev, u8 cmd, u16 value,
-			   u16 index, u16 size, void *data, int in_pm)
+			   u16 index, u16 size, void *data, int no_pm)
 {
 	int ret;
 	_usb_read_function fn;
 
-	if (!in_pm)
+	if (!no_pm)
 		fn = __ax_read_cmd;
 	else
 		fn = __ax_read_cmd_nopm;
@@ -572,12 +528,12 @@ static int __asix_read_cmd(struct ax_device *axdev, u8 cmd, u16 value,
 }
 
 static int __asix_write_cmd(struct ax_device *axdev, u8 cmd, u16 value,
-			    u16 index, u16 size, void *data, int in_pm)
+			    u16 index, u16 size, void *data, int no_pm)
 {
 	int ret;
 	_usb_write_function fn;
 
-	if (!in_pm)
+	if (!no_pm)
 		fn = __ax_write_cmd;
 	else
 		fn = __ax_write_cmd_nopm;
@@ -807,26 +763,15 @@ static void ax_set_unplug(struct ax_device *axdev)
 		set_bit(AX_UNPLUG, &axdev->flags);
 }
 
-static int ax_check_tx_queue_not_empty(struct ax_device *axdev)
+static int ax_check_tx_queue_not_empty(struct ax_device *axdev, int q_index)
 {
 	int i;
 
-	for (i = (AX_TX_QUEUE_SIZE - 1); i >= 0; i--)
+	for (i = q_index; i >= 0; i--)
 		if (!skb_queue_empty(&axdev->tx_queue[i]))
 			return i;
 
 	return -1;
-}
-
-static bool ax_check_tx_queue_len(struct ax_device *axdev)
-{
-	int i;
-
-	for (i = 0; i < AX_TX_QUEUE_SIZE; i++)
-		if (skb_queue_len(&axdev->tx_queue[i]) > axdev->tx_qlen)
-			return true;
-
-	return false;
 }
 
 static void ax_read_bulk_callback(struct urb *urb)
@@ -907,6 +852,7 @@ void ax_write_bulk_callback(struct urb *urb)
 	if (!desc)
 		return;
 
+	set_bit(AX_TX_URB_COMPLETED, &desc->flags);
 	axdev = desc->context;
 	if (!axdev)
 		return;
@@ -934,7 +880,7 @@ void ax_write_bulk_callback(struct urb *urb)
 	}
 
 	spin_lock(&axdev->tx_lock);
-	list_add_tail(&desc->list, &axdev->tx_free);
+	list_add_tail(&desc->list, &axdev->tx_free[desc->q_index]);
 	spin_unlock(&axdev->tx_lock);
 
 	usb_autopm_put_interface_async(axdev->intf);
@@ -946,12 +892,24 @@ void ax_write_bulk_callback(struct urb *urb)
 	if (test_bit(AX_UNPLUG, &axdev->flags))
 		return;
 
-	if (ax_check_tx_queue_not_empty(axdev) >= 0)
+	if (ax_check_tx_queue_not_empty(axdev, desc->q_index) >= 0)
 #ifdef ENABLE_TX_TASKLET
-		tasklet_schedule(&axdev->tx_tl);
+		tasklet_schedule(&axdev->tx_tl[desc->q_index]);
 #else
 		napi_schedule(&axdev->napi);
 #endif
+}
+
+static int ax_usb_submit_intr_urb(struct urb *urb, gfp_t mem_flags)
+{
+#ifdef ENABLE_INT_POLLING
+    struct ax_device *axdev = urb->context;
+
+    if (axdev->int_polling_enable)
+        return 0;
+#endif
+
+    return usb_submit_urb(urb, mem_flags);
 }
 
 static void ax_intr_callback(struct urb *urb)
@@ -968,6 +926,11 @@ static void ax_intr_callback(struct urb *urb)
 	if (!test_bit(AX_ENABLE, &axdev->flags) ||
 	    test_bit(AX_UNPLUG, &axdev->flags))
 		return;
+
+#ifdef ENABLE_INT_POLLING
+	if (axdev->int_polling_enable)
+		return;
+#endif
 
 	if (status)
 		axdev->bulkint_error++;
@@ -1015,7 +978,11 @@ static void ax_intr_callback(struct urb *urb)
 		}
 	} else {
 		if (netif_carrier_ok(axdev->netdev)) {
-			netif_stop_queue(axdev->netdev);
+			if (axdev->chip_version == AX_VERSION_AX88279A)
+				netif_tx_stop_all_queues(axdev->netdev);
+			else
+				netif_stop_queue(axdev->netdev);
+
 			set_bit(AX_LINK_CHG, &axdev->flags);
 			schedule_delayed_work(&axdev->schedule, 0);
 		}
@@ -1023,7 +990,7 @@ static void ax_intr_callback(struct urb *urb)
 #endif
 
 resubmit:
-	res = usb_submit_urb(urb, GFP_ATOMIC);
+	res = ax_usb_submit_intr_urb(urb, GFP_ATOMIC);
 	if (res == -ENODEV) {
 		ax_set_unplug(axdev);
 		netif_device_detach(axdev->netdev);
@@ -1034,6 +1001,20 @@ resubmit:
 }
 
 #ifdef ENABLE_INT_POLLING
+static void ax_schedule_delayed_work(struct delayed_work *dwork,
+                                     unsigned long delay)
+{
+    struct ax_device *axdev;
+
+    axdev = container_of(dwork,
+            struct ax_device, int_polling_work);
+
+    if (!axdev->int_polling_enable)
+        return;
+
+    schedule_delayed_work(dwork, delay);
+}
+
 static void __int_polling_work(struct work_struct *work)
 {
 	struct ax_device *axdev = container_of(work,
@@ -1041,13 +1022,14 @@ static void __int_polling_work(struct work_struct *work)
 	struct ax_link_info *link_info = &axdev->link_info;
 	u16 bmsr;
 	u16 speed;
+	u16 medium_mode = 0;
 	
 	if (test_bit(AX_UNPLUG, &axdev->flags) ||
 	    !test_bit(AX_ENABLE, &axdev->flags))
 		return;
 
 	if (!mutex_trylock(&axdev->control)) {
-		schedule_delayed_work(&axdev->int_polling_work, 0);
+		ax_schedule_delayed_work(&axdev->int_polling_work, 0);
 		return;
 	}
 
@@ -1055,6 +1037,8 @@ static void __int_polling_work(struct work_struct *work)
 	axdev->link = bmsr & BMSR_LSTATUS;
 	
 	if (axdev->link) {
+		ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
+					2, 2, &medium_mode, 1);
 		if (!netif_carrier_ok(axdev->netdev)) {
 			ax_set_carrier(axdev);
 			switch (link_info->eth_speed) {
@@ -1073,10 +1057,16 @@ static void __int_polling_work(struct work_struct *work)
 			}
 			netdev_info(axdev->netdev, "link up, %uMbps, %s-duplex\n",
 			    speed, link_info->full_duplex ? "full" : "half");
+		} else if (!(medium_mode & AX_MEDIUM_RECEIVE_EN)) {
+			axdev->driver_info->link_reset(axdev);	
 		}
 	} else {
 		if (netif_carrier_ok(axdev->netdev)) {
-			netif_stop_queue(axdev->netdev);
+			if (axdev->chip_version == AX_VERSION_AX88279A)
+				netif_tx_stop_all_queues(axdev->netdev);
+			else
+				netif_stop_queue(axdev->netdev);
+
 			ax_set_carrier(axdev);
 			netdev_info(axdev->netdev, "link down\n");
 		}
@@ -1084,15 +1074,15 @@ static void __int_polling_work(struct work_struct *work)
 
 	mutex_unlock(&axdev->control);
 
-	schedule_delayed_work(&axdev->int_polling_work,
+	ax_schedule_delayed_work(&axdev->int_polling_work,
 			      msecs_to_jiffies(INT_POLLING_TIMER));
 }
 #endif
 static void ax_free_buffer(struct ax_device *axdev)
 {
-	int i;
+	int i, j;
 
-	for (i = 0; i < AX88179_MAX_RX; i++) {
+	for (i = 0; i < axdev->rx_max; i++) {
 		usb_free_urb(axdev->rx_list[i].urb);
 		axdev->rx_list[i].urb = NULL;
 
@@ -1100,14 +1090,16 @@ static void ax_free_buffer(struct ax_device *axdev)
 		axdev->rx_list[i].buffer = NULL;
 		axdev->rx_list[i].head = NULL;
 	}
+	
+	for (i = 0; i < axdev->driver_info->tx_num; i++) {
+		for (j = 0; j < axdev->tx_max; j++) {
+			usb_free_urb(axdev->tx_list[i][j].urb);
+			axdev->tx_list[i][j].urb = NULL;
 
-	for (i = 0; i < AX88179_MAX_TX; i++) {
-		usb_free_urb(axdev->tx_list[i].urb);
-		axdev->tx_list[i].urb = NULL;
-
-		kfree(axdev->tx_list[i].buffer);
-		axdev->tx_list[i].buffer = NULL;
-		axdev->tx_list[i].head = NULL;
+			kfree(axdev->tx_list[i][j].buffer);
+			axdev->tx_list[i][j].buffer = NULL;
+			axdev->tx_list[i][j].head = NULL;
+		}
 	}
 
 	usb_free_urb(axdev->intr_urb);
@@ -1124,21 +1116,24 @@ static int ax_alloc_buffer(struct ax_device *axdev)
 	struct usb_host_interface *alt = intf->cur_altsetting;
 	struct usb_host_endpoint *ep_intr = alt->endpoint;
 	struct urb *urb;
-	int node, i;
+	int node, i, j;
 	u8 *buf;
 
 	node = netdev->dev.parent ? dev_to_node(netdev->dev.parent) : -1;
 
 	spin_lock_init(&axdev->rx_lock);
 	spin_lock_init(&axdev->tx_lock);
-	INIT_LIST_HEAD(&axdev->tx_free);
+
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		INIT_LIST_HEAD(&axdev->tx_free[i]);
 	INIT_LIST_HEAD(&axdev->rx_done);
-	for (i = 0; i < AX_TX_QUEUE_SIZE; i++)
+
+	for (i = 0; i < axdev->tx_queue_num; i++)
 		skb_queue_head_init(&axdev->tx_queue[i]);
 	skb_queue_head_init(&axdev->rx_queue);
 
-	for (i = 0; i < AX88179_MAX_RX; i++) {
-		buf = kmalloc_node(axdev->driver_info->buf_rx_size,
+	for (i = 0; i < axdev->rx_max; i++) {
+		buf = kmalloc_node(axdev->rx_buf,
 				   GFP_KERNEL, node);
 		if (!buf)
 			goto err1;
@@ -1146,7 +1141,7 @@ static int ax_alloc_buffer(struct ax_device *axdev)
 		if (buf != __rx_buf_align(buf)) {
 			kfree(buf);
 			buf = kmalloc_node(
-				axdev->driver_info->buf_rx_size + RX_ALIGN,
+				axdev->rx_buf + RX_ALIGN,
 				GFP_KERNEL,
 				node);
 			if (!buf)
@@ -1165,36 +1160,50 @@ static int ax_alloc_buffer(struct ax_device *axdev)
 		axdev->rx_list[i].buffer = buf;
 		axdev->rx_list[i].head = __rx_buf_align(buf);
 	}
-
-	for (i = 0; i < AX88179_MAX_TX; i++) {
-		buf = kmalloc_node(AX88179_BUF_TX_SIZE, GFP_KERNEL, node);
-		if (!buf)
-			goto err1;
-
-		if (buf != __tx_buf_align(buf, axdev->tx_align_len)) {
-			kfree(buf);
-			buf = kmalloc_node(
-				AX88179_BUF_TX_SIZE + axdev->tx_align_len,
-				GFP_KERNEL, node);
+	
+	for (i = 0; i < axdev->driver_info->tx_num; i++) {
+		for (j = 0; j < axdev->tx_max; j++) {
+			buf = kmalloc_node(axdev->tx_buf, GFP_KERNEL, node);
 			if (!buf)
 				goto err1;
+	
+			if (buf != __tx_buf_align(buf, axdev->tx_align_len)) {
+				kfree(buf);
+				buf = kmalloc_node(
+					axdev->tx_buf + axdev->tx_align_len,
+					GFP_KERNEL, node);
+				if (!buf)
+					goto err1;
+			}
+	
+			urb = usb_alloc_urb(0, GFP_KERNEL);
+			if (!urb) {
+				kfree(buf);
+				goto err1;
+			}
+	
+			INIT_LIST_HEAD(&axdev->tx_list[i][j].list);
+			axdev->tx_list[i][j].context = axdev;
+			axdev->tx_list[i][j].urb = urb;
+			axdev->tx_list[i][j].buffer = buf;
+			axdev->tx_list[i][j].head = __tx_buf_align(buf,
+								axdev->tx_align_len);
+			axdev->tx_list[i][j].flags = 0;
+			axdev->tx_list[i][j].q_index = i;
+			list_add_tail(&axdev->tx_list[i][j].list, &axdev->tx_free[i]);
 		}
-
-		urb = usb_alloc_urb(0, GFP_KERNEL);
-		if (!urb) {
-			kfree(buf);
-			goto err1;
-		}
-
-		INIT_LIST_HEAD(&axdev->tx_list[i].list);
-		axdev->tx_list[i].context = axdev;
-		axdev->tx_list[i].urb = urb;
-		axdev->tx_list[i].buffer = buf;
-		axdev->tx_list[i].head = __tx_buf_align(buf,
-							axdev->tx_align_len);
-
-		list_add_tail(&axdev->tx_list[i].list, &axdev->tx_free);
 	}
+	
+#ifdef ENABLE_RX_PREEMPT
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		axdev->pb = kmalloc(sizeof(struct pkt_buff), GFP_KERNEL);
+		axdev->pb->index = 0;
+		axdev->pb->len = 0;
+		axdev->pb->head = NULL;
+		axdev->pb->prev = NULL;
+		axdev->pb->total_len = 0;
+	}
+#endif
 
 	axdev->intr_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!axdev->intr_urb)
@@ -1216,19 +1225,19 @@ err1:
 	return -ENOMEM;
 }
 
-static struct tx_desc *ax_get_tx_desc(struct ax_device *dev)
+static struct tx_desc *ax_get_tx_desc(struct ax_device *dev, int index)
 {
 	struct tx_desc *desc = NULL;
 	unsigned long flags;
 
-	if (list_empty(&dev->tx_free))
+	if (list_empty(&dev->tx_free[index]))
 		return NULL;
 
 	spin_lock_irqsave(&dev->tx_lock, flags);
-	if (!list_empty(&dev->tx_free)) {
+	if (!list_empty(&dev->tx_free[index])) {
 		struct list_head *cursor;
 
-		cursor = dev->tx_free.next;
+		cursor = dev->tx_free[index].next;
 		list_del_init(cursor);
 		desc = list_entry(cursor, struct tx_desc, list);
 	}
@@ -1237,26 +1246,29 @@ static struct tx_desc *ax_get_tx_desc(struct ax_device *dev)
 	return desc;
 }
 
-static void ax_tx_bottom(struct ax_device *axdev)
+static void ax_tx_bottom(struct ax_device *axdev, int index)
 {
 	const struct driver_info *info = axdev->driver_info;
 	int ret;
 
 	do {
 		struct tx_desc *desc;
-		int index = -1;
+		int q_index = -1;
 
-		index = ax_check_tx_queue_not_empty(axdev);
-		if (index < 0)
+		q_index = ax_check_tx_queue_not_empty(axdev, index); 
+		if (q_index < 0)
 			break;
 
-		desc = ax_get_tx_desc(axdev);
+		desc = ax_get_tx_desc(axdev, q_index);
 		if (!desc)
 			break;
 #ifdef ENABLE_QUEUE_PRIORITY
-		desc->q_index = index;
+		desc->q_index = q_index;
 #else
-		desc->q_index = 0;
+		if (axdev->chip_version == AX_VERSION_AX88279A)
+			desc->q_index = q_index;
+		else
+			desc->q_index = 0;
 #endif
 		ret = info->tx_fixup(axdev, desc);
 		if (ret) {
@@ -1273,21 +1285,24 @@ static void ax_tx_bottom(struct ax_device *axdev)
 				stats->tx_dropped += desc->skb_num;
 
 				spin_lock_irqsave(&axdev->tx_lock, flags);
-				list_add_tail(&desc->list, &axdev->tx_free);
+				list_add_tail(&desc->list, &axdev->tx_free[desc->q_index]);
 				spin_unlock_irqrestore(&axdev->tx_lock, flags);
 			}
 		}
-	} while (ret == 0);
+	} while ((ret == 0 && 
+		!test_bit(AX_UNPLUG, &axdev->flags) &&
+	    test_bit(AX_ENABLE, &axdev->flags)) || 
+	    netif_carrier_ok(axdev->netdev));
 }
 #ifdef ENABLE_TX_TASKLET
-#if KERNEL_VERSION(5,10,0) > LINUX_VERSION_CODE
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
 static void ax_bottom_half(unsigned long t)
 {
 	struct ax_device *axdev = (struct ax_device *)t;
 #else
 static void ax_bottom_half(struct tasklet_struct *t)
 {
-	struct ax_device *axdev = from_tasklet(axdev, t, tx_tl);
+	struct ax_device *axdev = from_tasklet(axdev, t, tx_tl[0]);
 #endif
 
 #else
@@ -1304,7 +1319,7 @@ static void ax_bottom_half(struct ax_device *axdev)
 	clear_bit(AX_SCHEDULE_NAPI, &axdev->flags);
 #endif
 
-	ax_tx_bottom(axdev);
+	ax_tx_bottom(axdev, 0);
 }
 
 static int ax_rx_bottom(struct ax_device *axdev, int budget)
@@ -1378,8 +1393,8 @@ submit:
 	return work_done;
 }
 
-static
-int ax_submit_rx(struct ax_device *dev, struct rx_desc *desc, gfp_t mem_flags)
+static int ax_submit_rx(struct ax_device *dev, 
+				struct rx_desc *desc, gfp_t mem_flags)
 {
 	int ret;
 
@@ -1446,8 +1461,9 @@ static inline int __ax_poll(struct ax_device *axdev, int budget)
 #endif
 
 #ifndef ENABLE_TX_TASKLET
-		else if (ax_check_tx_queue_not_empty(axdev) >= 0 &&
-			 !list_empty(&axdev->tx_free))
+		else if (ax_check_tx_queue_not_empty(axdev, 
+				(axdev->tx_queue_num - 1)) >= 0 &&
+			 	!list_empty(&axdev->tx_free[0]))
 			napi_schedule(napi);
 #endif
 	}
@@ -1456,7 +1472,7 @@ static inline int __ax_poll(struct ax_device *axdev, int budget)
 }
 
 #ifdef ENABLE_RX_TASKLET
-#if KERNEL_VERSION(5,10,0) > LINUX_VERSION_CODE
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
 static void ax_poll(unsigned long t)
 {
 	struct ax_device *axdev = (struct ax_device *)t;
@@ -1485,7 +1501,7 @@ static void ax_drop_queued_tx(struct ax_device *axdev)
 	struct sk_buff *skb;
 	int i;
 
-	for (i = 0; i < AX_TX_QUEUE_SIZE; i++) {
+	for (i = 0; i < axdev->tx_queue_num; i++) {
 		if (skb_queue_empty(&tx_queue[i]))
 			continue;
 
@@ -1510,43 +1526,217 @@ static void ax_tx_timeout(struct net_device *netdev)
 	struct ax_device *axdev = netdev_priv(netdev);
 
 	netif_warn(axdev, tx_err, netdev, "Tx timeout\n");
-
-	usb_queue_reset_device(axdev->intf);
-
+	
+	/*TODO: EINPROGRESS currently only handles multi-queue case.
+			Other protection mechanisms are needed.*/
+	if (axdev->tx_list[txqueue]->urb->status != -EINPROGRESS)
+		usb_queue_reset_device(axdev->intf);
+	else
+		netif_wake_subqueue(axdev->netdev, txqueue);
 }
 
-#ifdef ENABLE_QUEUE_PRIORITY
 static u16 ax_select_queue(struct net_device *netdev, struct sk_buff *skb,
 			   struct net_device *sb_dev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
+	
+#ifdef ENABLE_QUEUE_PRIORITY
 	struct ax_link_info *link_info = &axdev->link_info;
 
 	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
-#ifdef ENABLE_AX88279
 		if (axdev->chip_version >= AX_VERSION_AX88279)
 			return 1;
-#endif
 		if (link_info->eth_speed == ETHER_LINK_1000)
 			return 1;
 	}
+#else
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		return skb_get_queue_mapping(skb);
+#endif
+
 	return 0;
+}
+
+
+#ifdef ENABLE_LSO
+static unsigned char *get_raw_buff_data(struct ax_device *axdev,
+				     	struct sk_buff *skb,
+					int didx, int *opts)
+{
+	u16 sport;
+	unsigned char *buff;
+	int idx = didx, off = 14, opts_off = 0;
+
+	if (skb_shinfo(skb)->nr_frags > 0) {
+		skb_frag_t *frag;
+		struct page *page;
+		void *mapped_page;
+
+		frag = &(skb_shinfo(skb)->frags[0]);
+		page = skb_frag_page(frag);
+		mapped_page = kmap_atomic(page);
+
+		buff = (unsigned char *)(mapped_page + skb_frag_off(frag));
+
+		switch (ntohs(skb->protocol)) {
+		case 0x0800:
+			*opts = ((buff[0] & IHL) == 0x0F) ? 1 : 0;
+			opts_off = 40;
+			break;
+		case 0x86DD:
+			*opts = ((buff[6] & NEXT_HDR) != 0x06) ? 1 : 0;
+			opts_off = 8;
+			break;
+		}
+
+		idx += (*opts) ? opts_off : 0;
+		sport = ((buff[idx]) << 8) | (buff[idx + 1]);
+
+		kunmap_atomic(mapped_page);
+    	} else {
+		buff = skb->data;
+
+		switch (ntohs(skb->protocol)) {
+		case 0x0800:
+			*opts = ((buff[14] & IHL) == 0x0F) ? 1 : 0;
+			opts_off = 40;
+			break;
+		case 0x86DD:
+			*opts = ((buff[20] & NEXT_HDR) != 0x06) ? 1 : 0;
+			opts_off = 8;
+			break;
+		}
+
+		idx += (*opts) ? opts_off : 0;
+		sport = ((buff[idx + off]) << 8) | (buff[idx + off + 1]);
+	}
+
+	if (sport ^ 0x0BC3)
+		buff = NULL;
+
+	return buff;
+}
+
+static int get_txq_from_l3_hdr(struct ax_device *axdev, struct sk_buff *skb)
+{
+	int opts;
+	unsigned char *buff;
+
+	switch (ntohs(skb->protocol)) {
+	case 0x0800:
+		buff = get_raw_buff_data(axdev, skb, 20, &opts);
+		break;
+	case 0x86DD:
+		buff = get_raw_buff_data(axdev, skb, 40, &opts);
+		break;
+	default:
+		buff = NULL;
+		break;
+	}
+	if (!buff)
+		return 0;
+
+	if (skb_shinfo(skb)->nr_frags > 0)
+		return (int)buff[1];
+	else
+		return (int)buff[15];
+}
+
+static u16 get_lso_info(struct ax_device *axdev, struct sk_buff *skb,
+			u16 *lso_tci)
+{
+	unsigned char *buff;
+	int urg, win, opts;
+	u16 mss = 0, tci = 0;
+
+	switch (ntohs(skb->protocol)) {
+	case 0x0800:
+		buff = get_raw_buff_data(axdev, skb, 20, &opts);
+		if (!buff)
+			return 0;
+
+		urg = (skb_shinfo(skb)->nr_frags) ?
+			opts ? IPV4_URG_NON_LINEAR + 40 : IPV4_URG_NON_LINEAR :
+		      	opts ? IPV4_URG_LINEAR + 40 : IPV4_URG_LINEAR;
+		win = (skb_shinfo(skb)->nr_frags) ?
+			opts ? IPV4_WIN_NON_LINEAR + 40 : IPV4_WIN_NON_LINEAR :
+			opts ? IPV4_WIN_LINEAR + 40 : IPV4_WIN_LINEAR;
+		mss = ((buff[urg]) << 8) | (buff[urg + 1]);
+		tci = ((buff[win]) << 8) | (buff[win + 1]);
+		break;
+	case 0x86DD:
+		buff = get_raw_buff_data(axdev, skb, 40, &opts);
+		if (!buff)
+			return 0;
+
+		urg = (skb_shinfo(skb)->nr_frags) ?
+			opts ? IPV6_URG_NON_LINEAR + 8 : IPV6_URG_NON_LINEAR :
+			opts ? IPV6_URG_LINEAR + 8 : IPV6_URG_LINEAR;
+		win = (skb_shinfo(skb)->nr_frags) ?
+			opts ? IPV6_WIN_NON_LINEAR + 8 : IPV6_WIN_NON_LINEAR :
+			opts ? IPV6_WIN_LINEAR + 8 : IPV6_WIN_LINEAR;
+		mss = ((buff[urg]) << 8) | (buff[urg + 1]);
+		tci = ((buff[win]) << 8) | (buff[win + 1]);
+		break;
+	}
+
+	*lso_tci = tci;
+
+	return mss;
 }
 #endif
 
 static netdev_tx_t ax_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
-#ifdef ENABLE_QUEUE_PRIORITY
-	u32 index = ax_select_queue(netdev, skb, NULL);
+	netdev_tx_t ret = NETDEV_TX_OK;
+	u32 index = 0;
+
+#ifdef ENABLE_LSO
+	u16 tci;
+	bool vlan;
 #endif
-	skb_tx_timestamp(skb);
+
 #ifdef ENABLE_QUEUE_PRIORITY
-	skb_queue_tail(&axdev->tx_queue[index], skb);
+	index = skb_get_queue_mapping(skb);
 #else
-	skb_queue_tail(&axdev->tx_queue[0], skb);
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		index = skb_get_queue_mapping(skb);
 #endif
-	if (!list_empty(&axdev->tx_free)) {
+
+#ifdef ENABLE_LSO 
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		u16 lso_mss, lso_tci = 0;
+		lso_mss = get_lso_info(axdev, skb, &lso_tci);
+		if (lso_mss) {
+			skb_shinfo(skb)->gso_size = lso_mss;
+			tci = lso_tci;
+			if (tci)
+				vlan = true;
+		}
+	}
+#endif
+	if (skb_queue_len(&axdev->tx_queue[index]) >= axdev->tx_qlen) {
+		if (axdev->chip_version == AX_VERSION_AX88279A)
+			netif_stop_subqueue(axdev->netdev, index);
+		else
+			netif_stop_queue(axdev->netdev);
+
+		ret = NETDEV_TX_BUSY;
+	} else {
+		skb_tx_timestamp(skb);
+
+#ifdef ENABLE_QUEUE_PRIORITY
+		skb_queue_tail(&axdev->tx_queue[index], skb);
+#else
+		if (axdev->chip_version == AX_VERSION_AX88279A)
+			skb_queue_tail(&axdev->tx_queue[index], skb);
+		else
+			skb_queue_tail(&axdev->tx_queue[0], skb);
+#endif
+	}
+	
+	if (!list_empty(&axdev->tx_free[index])) {
 		if (test_bit(AX_SELECTIVE_SUSPEND, &axdev->flags)) {
 #ifdef ENABLE_TX_TASKLET
 			set_bit(AX_SCHEDULE_TASKLET_TX, &axdev->flags);
@@ -1557,23 +1747,19 @@ static netdev_tx_t ax_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		} else {
 			usb_mark_last_busy(axdev->udev);
 #ifdef ENABLE_TX_TASKLET
-			tasklet_schedule(&axdev->tx_tl);
+			tasklet_schedule(&axdev->tx_tl[index]);
 #else
 			napi_schedule(&axdev->napi);
 #endif
 		}
-	} else if (ax_check_tx_queue_len(axdev)) {
-		netif_stop_queue(netdev);
 	}
-
-	return NETDEV_TX_OK;
+	
+	return ret;
 }
 
-void ax_set_tx_qlen(struct ax_device *dev)
+void ax_set_tx_qlen(struct ax_device *axdev)
 {
-	struct net_device *netdev = dev->netdev;
-
-	dev->tx_qlen = AX88179_BUF_TX_SIZE / (netdev->mtu + ETH_FCS_LEN + 8);
+	axdev->tx_qlen = AX_TX_QUEUE_LEN;
 }
 
 static int ax_start_rx(struct ax_device *axdev)
@@ -1581,14 +1767,14 @@ static int ax_start_rx(struct ax_device *axdev)
 	int i, ret = 0;
 
 	INIT_LIST_HEAD(&axdev->rx_done);
-	for (i = 0; i < AX88179_MAX_RX; i++) {
+	for (i = 0; i < axdev->rx_max; i++) {
 		INIT_LIST_HEAD(&axdev->rx_list[i].list);
 		ret = ax_submit_rx(axdev, &axdev->rx_list[i], GFP_KERNEL);
 		if (ret)
 			break;
 	}
 
-	if (ret && ++i < AX88179_MAX_RX) {
+	if (ret && ++i < axdev->rx_max) {
 		struct list_head rx_queue;
 		unsigned long flags;
 
@@ -1600,7 +1786,7 @@ static int ax_start_rx(struct ax_device *axdev)
 
 			urb->actual_length = 0;
 			list_add_tail(&desc->list, &rx_queue);
-		} while (i < AX88179_MAX_RX);
+		} while (i < axdev->rx_max);
 
 		spin_lock_irqsave(&axdev->rx_lock, flags);
 		list_splice_tail(&rx_queue, &axdev->rx_done);
@@ -1614,7 +1800,7 @@ static int ax_stop_rx(struct ax_device *axdev)
 {
 	int i;
 
-	for (i = 0; i < AX88179_MAX_RX; i++)
+	for (i = 0; i < axdev->rx_max; i++)
 		usb_kill_urb(axdev->rx_list[i].urb);
 
 	while (!skb_queue_empty(&axdev->rx_queue))
@@ -1625,15 +1811,19 @@ static int ax_stop_rx(struct ax_device *axdev)
 
 static void ax_disable(struct ax_device *axdev)
 {
-	int i;
+	int i, j;
 
 	if (test_bit(AX_UNPLUG, &axdev->flags)) {
 		ax_drop_queued_tx(axdev);
 		return;
 	}
 
-	for (i = 0; i < AX88179_MAX_TX; i++)
-		usb_kill_urb(axdev->tx_list[i].urb);
+	for (i = 0; i < axdev->driver_info->tx_num; i++) {
+		for (j = 0; j < axdev->tx_max; j++) {
+			set_bit(AX_TX_URB_COMPLETED, &axdev->tx_list[i][j].flags);
+			usb_kill_urb(axdev->tx_list[i][j].urb);
+		}
+	}
 
 	ax_stop_rx(axdev);
 }
@@ -1669,8 +1859,8 @@ ax88179_set_features(struct net_device *net, u32 features)
 
 	if (changed & NETIF_F_RXCSUM) {
 		ax_read_cmd(dev, AX_ACCESS_MAC, AX_RXCOE_CTL, 1, 1, &reg8, 0);
-		reg8 ^= AX_RXCOE_IP | AX_RXCOE_TCP | AX_RXCOE_UDP |
-			AX_RXCOE_TCPV6 | AX_RXCOE_UDPV6;
+		reg8 ^= AX_RXCOE_IP 	| AX_RXCOE_TCP 		| AX_RXCOE_UDP |
+				AX_RXCOE_TCPV6 	| AX_RXCOE_UDPV6;
 		ax_write_cmd(dev, AX_ACCESS_MAC, AX_RXCOE_CTL, 1, 1, &reg8);
 	}
 
@@ -1681,6 +1871,9 @@ ax88179_set_features(struct net_device *net, u32 features)
 static void ax_set_carrier(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
 #ifndef ENABLE_RX_TASKLET
 	struct napi_struct *napi = &axdev->napi;
 #endif
@@ -1692,7 +1885,12 @@ static void ax_set_carrier(struct ax_device *axdev)
 #endif
 			if (axdev->driver_info->link_reset(axdev))
 				return;
-			netif_stop_queue(netdev);
+
+			if (axdev->chip_version == AX_VERSION_AX88279A)
+				netif_tx_stop_all_queues(netdev);
+			else
+				netif_stop_queue(netdev);
+
 #ifdef ENABLE_RX_TASKLET
 			tasklet_disable(&axdev->rx_tl);
 #else
@@ -1705,28 +1903,34 @@ static void ax_set_carrier(struct ax_device *axdev)
 #else
 			napi_enable(napi);
 #endif
-			netif_wake_queue(netdev);
-		} else if (netif_queue_stopped(netdev) &&
-			   ax_check_tx_queue_len(axdev)) {
-			netif_wake_queue(netdev);
+
+			if (axdev->chip_version == AX_VERSION_AX88279A)
+				netif_tx_wake_all_queues(netdev);
+			else
+				netif_wake_queue(netdev);
 		}
+		netdev_info(axdev->netdev, "link up, %uMbps, %s-duplex\n",
+			(axdev->link_info.eth_speed > ETHER_LINK_2500) ? 
+			0 : eth_speed[axdev->link_info.eth_speed], 
+			(axdev->link_info.full_duplex || 
+			axdev->link_info.eth_speed == ETHER_LINK_2500) ? 
+			"full" : "half");
 	} else {
 		if (netif_carrier_ok(netdev)) {
 			netif_carrier_off(netdev);
 #ifdef ENABLE_PTP_FUNC
 			axdev->driver_info->ptp_pps_ctrl(axdev, 0);
 #endif
-#ifdef ENABLE_AX88279
-			if (axdev->chip_version == AX_VERSION_AX88279) {
+			if (axdev->chip_version >= AX_VERSION_AX88279) {
 				u8 reg8 = 0;
 				ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 							AX88179A_BFM_DATA, 1, 1, &reg8);
 				ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 							AX_MEDIUM_STATUS_MODE, 1, 1, &reg8);
-			}
-#endif			
+			}			
 #ifdef ENABLE_TX_TASKLET
-			tasklet_disable(&axdev->tx_tl);
+			for (i = 0; i < axdev->driver_info->tx_num; i++)
+				tasklet_disable(&axdev->tx_tl[i]);
 #endif
 #ifdef ENABLE_RX_TASKLET
 			tasklet_disable(&axdev->rx_tl);
@@ -1740,20 +1944,20 @@ static void ax_set_carrier(struct ax_device *axdev)
 			napi_enable(napi);
 #endif	
 #ifdef ENABLE_TX_TASKLET
-			tasklet_enable(&axdev->tx_tl);
+			for (i = 0; i < axdev->driver_info->tx_num; i++)
+				tasklet_enable(&axdev->tx_tl[i]);
 #endif
 		}
+		netdev_info(axdev->netdev, "link down\n");
 	}
-#ifdef ENABLE_AX88279
-	if (axdev->intr_link_info.eth_speed == ETHER_LINK_2500) {
-		netdev_info(axdev->netdev,
-			    "link up, 2500Mbps, full-duplex\n");
-	}
-#endif
 }
 
 static inline void __ax_work_func(struct ax_device *axdev)
 {
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
+	
 	if (test_bit(AX_UNPLUG, &axdev->flags) || !netif_running(axdev->netdev))
 		return;
 
@@ -1783,7 +1987,8 @@ static inline void __ax_work_func(struct ax_device *axdev)
 #ifdef ENABLE_TX_TASKLET
 	if (test_and_clear_bit(AX_SCHEDULE_TASKLET_TX, &axdev->flags) &&
 	    netif_carrier_ok(axdev->netdev))
-		tasklet_schedule(&axdev->tx_tl);
+	    for (i = 0; i < axdev->driver_info->tx_num; i++)
+			tasklet_schedule(&axdev->tx_tl[i]);
 #endif
 
 	mutex_unlock(&axdev->control);
@@ -1799,6 +2004,48 @@ static void ax_work_func_t(struct work_struct *work)
 
 	__ax_work_func(axdev);
 }
+
+#ifdef ENABLE_TX_TASKLET
+static void ax_tx_work_func_qx(struct tasklet_struct *data, u8 queue_index)
+{
+	struct ax_device *axdev = from_tasklet(axdev, data, tx_tl[queue_index]);
+	if (test_bit(AX_UNPLUG, &axdev->flags) ||
+	    !test_bit(AX_ENABLE, &axdev->flags) ||
+	    !netif_carrier_ok(axdev->netdev))
+		return;
+
+	ax_tx_bottom(axdev, queue_index);
+}
+
+static void ax_tx_work_func_q0_t(struct tasklet_struct *data)
+{
+	ax_tx_work_func_qx(data, 0);
+}
+
+static void ax_tx_work_func_q1_t(struct tasklet_struct *data)
+{
+	ax_tx_work_func_qx(data, 1);
+}
+
+static void ax_tx_work_func_q2_t(struct tasklet_struct *data)
+{
+	ax_tx_work_func_qx(data, 2);
+}
+
+static void ax_tx_work_func_q3_t(struct tasklet_struct *data)
+{
+	ax_tx_work_func_qx(data, 3);
+}
+
+typedef void (*tx_work)(struct tasklet_struct *data);
+
+static tx_work tx_work_func[4] = { 
+	ax_tx_work_func_q0_t, 
+	ax_tx_work_func_q1_t, 
+	ax_tx_work_func_q2_t,
+	ax_tx_work_func_q3_t
+};
+#endif
 
 int ax_usb_command(struct ax_device *axdev, struct _ax_ioctl_command *info)
 {
@@ -1838,6 +2085,9 @@ static int ax_open(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 	int res = 0;
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
 
 	res = ax_alloc_buffer(axdev);
 	if (res)
@@ -1851,11 +2101,11 @@ static int ax_open(struct net_device *netdev)
 
 	set_bit(AX_ENABLE, &axdev->flags);
 
-	res = axdev->driver_info->hw_init(axdev);
+	res = axdev->driver_info->hw_init(axdev, 0);
 	if (res < 0)
 		goto out_unlock;
 
-	res = usb_submit_urb(axdev->intr_urb, GFP_KERNEL);
+	res = ax_usb_submit_intr_urb(axdev->intr_urb, GFP_KERNEL);
 	if (res) {
 		if (res == -ENODEV)
 			netif_device_detach(netdev);
@@ -1864,7 +2114,7 @@ static int ax_open(struct net_device *netdev)
 		goto out_unlock;
 	}
 #ifdef ENABLE_INT_POLLING
-	schedule_delayed_work(&axdev->int_polling_work,
+	ax_schedule_delayed_work(&axdev->int_polling_work,
 			      msecs_to_jiffies(INT_POLLING_TIMER));
 #endif
 #ifdef ENABLE_RX_TASKLET
@@ -1873,11 +2123,18 @@ static int ax_open(struct net_device *netdev)
 	napi_enable(&axdev->napi);
 #endif
 #ifdef ENABLE_TX_TASKLET
-	tasklet_enable(&axdev->tx_tl);
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_enable(&axdev->tx_tl[i]);
 #endif
 
 	netif_carrier_off(netdev);
-	netif_start_queue(netdev);
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		netif_set_real_num_tx_queues(netdev, 
+					axdev->driver_info->tx_num);
+		netif_tx_start_all_queues(netdev);
+	} else {
+		netif_start_queue(netdev);
+	}
 	mutex_unlock(&axdev->control);
 	usb_autopm_put_interface(axdev->intf);
 
@@ -1895,12 +2152,16 @@ static int ax_close(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 	int ret = 0;
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
 
 	if (axdev->driver_info->stop)
 		axdev->driver_info->stop(axdev);
 
 #ifdef ENABLE_TX_TASKLET
-	tasklet_disable(&axdev->tx_tl);
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_disable(&axdev->tx_tl[i]);
 #endif
 	clear_bit(AX_ENABLE, &axdev->flags);
 	usb_kill_urb(axdev->intr_urb);
@@ -1913,7 +2174,11 @@ static int ax_close(struct net_device *netdev)
 #else
 	napi_disable(&axdev->napi);
 #endif
-	netif_stop_queue(axdev->netdev);
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netif_tx_stop_all_queues(axdev->netdev);
+	else
+		netif_stop_queue(axdev->netdev);
 
 	ret = usb_autopm_get_interface(axdev->intf);
 	if (ret < 0 || test_bit(AX_UNPLUG, &axdev->flags)) {
@@ -2074,7 +2339,7 @@ static int ax_get_chip_feature(struct ax_device *axdev)
 static int ax_get_mac_address(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
-	struct sockaddr addr;
+	struct sockaddr addr = { 0 };
 
 	if (ax_read_cmd(axdev, AX_ACCESS_MAC, AX_NODE_ID, ETH_ALEN,
 			ETH_ALEN, addr.sa_data, 0) < 0) {
@@ -2104,7 +2369,6 @@ static int ax_get_mac_address(struct ax_device *axdev)
 	return 0;
 }
 
-
 static bool ax_can_wakeup(struct ax_device *axdev)
 {
 	struct usb_device *udev = axdev->udev;
@@ -2115,11 +2379,13 @@ static bool ax_can_wakeup(struct ax_device *axdev)
 static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
 	struct usb_device *udev = interface_to_usbdev(intf);
-	//struct usb_driver *driver = to_usb_driver(intf->dev.driver);
 	const struct driver_info *info;
+	struct usb_host_interface *alt = intf->cur_altsetting;
+	struct usb_ss_ep_comp_descriptor *comp = NULL;
 	struct net_device *netdev;
 	struct ax_device *axdev;
 	int ret;
+	int i;
 
 	if (udev->actconfig->desc.bConfigurationValue != 1) {
 		usb_driver_set_configuration(udev, 1);
@@ -2132,7 +2398,12 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		return -ENODEV;
 	}
 
-	netdev = alloc_etherdev(sizeof(struct ax_device));
+	if (udev->descriptor.bcdDevice == AX_BCDDEVICE_ID_279A)
+		netdev = alloc_etherdev_mqs(sizeof(struct ax_device), 
+						AX_TX_MAX_QUEUE_SIZE, 1);
+	else
+		netdev = alloc_etherdev(sizeof(struct ax_device));
+
 	if (!netdev) {
 		dev_err(&intf->dev, "Out of memory\n");
 		return -ENOMEM;
@@ -2142,32 +2413,62 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	axdev->driver_info = info;
 
 	netdev->watchdog_timeo = AX_TX_TIMEOUT;
-
+	
 	axdev->udev = udev;
 	axdev->netdev = netdev;
 	axdev->intf = intf;
 	intf->needs_remote_wakeup = true;
 #ifdef ENABLE_AUTODETACH_FUNC
-	axdev->autodetach = (autodetach == -1) ? false : true;
+	axdev->autodetach = (autodetach == -1) ? true : false;
 #else
 	axdev->autodetach = false;
 #endif
+
 	mutex_init(&axdev->control);
 	INIT_DELAYED_WORK(&axdev->schedule, ax_work_func_t);
-#ifdef ENABLE_TX_TASKLET
-#if KERNEL_VERSION(5,10,0) > LINUX_VERSION_CODE
-	tasklet_init(&axdev->tx_tl, ax_bottom_half, (unsigned long) axdev);
-#else
-	tasklet_setup(&axdev->tx_tl, ax_bottom_half);
-#endif
-	tasklet_disable(&axdev->tx_tl);
-#endif
 
 	ret = ax_get_chip_feature(axdev);
 	if (ret) {
 		dev_err(&intf->dev, "Failed to get Device feature\n");
 		goto out;
 	}
+
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+#if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
+		netif_set_tso_max_size(netdev, AX88279A_MAX_MTU);
+#else
+		netif_set_gso_max_size(netdev, AX88279A_MAX_MTU);
+#endif
+		netdev->min_mtu = ETH_MIN_MTU;
+		netdev->max_mtu = AX88279A_MAX_MTU;
+	}
+	
+#ifdef ENABLE_QUEUE_PRIORITY
+	axdev->tx_queue_num = 2;
+#else
+	axdev->tx_queue_num = axdev->driver_info->tx_num;
+#endif
+
+#ifdef ENABLE_TX_TASKLET
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		for (i = 0; i < axdev->driver_info->tx_num; i++) {
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
+			tasklet_init(&axdev->tx_tl[i], tx_work_func[i], 
+						(unsigned long) axdev);
+#else
+			tasklet_setup(&axdev->tx_tl[i], tx_work_func[i]);
+#endif
+			tasklet_disable(&axdev->tx_tl[i]);
+		}
+	} else {
+#if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
+		tasklet_init(&axdev->tx_tl[0], ax_bottom_half, (unsigned long) axdev);
+#else
+		tasklet_setup(&axdev->tx_tl[0], ax_bottom_half);
+#endif
+		tasklet_disable(&axdev->tx_tl[0]);
+	}
+#endif
 
 	ret = info->bind(axdev);
 	if (ret) {
@@ -2176,6 +2477,16 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	}
 
 	usb_set_intfdata(intf, axdev);
+
+	for (i = 0; i < alt->desc.bNumEndpoints; i++) {
+		struct usb_host_endpoint *ep = &alt->endpoint[i];
+		int epnum = ep->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK;
+		if (epnum == 1) {
+			comp = &ep->ss_ep_comp;
+			break;
+		}
+	}
+
 #ifdef ENABLE_RX_TASKLET
 #if KERNEL_VERSION(5,10,0) > LINUX_VERSION_CODE
 	tasklet_init(&axdev->rx_tl, ax_poll, (unsigned long) axdev);
@@ -2185,9 +2496,11 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	tasklet_disable(&axdev->rx_tl);
 #else
 #if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
-	netif_napi_add_weight(netdev, &axdev->napi, ax_poll, AX88179_NAPI_WEIGHT);
+	netif_napi_add_weight(netdev, &axdev->napi, ax_poll, 
+					axdev->driver_info->napi_weight);
 #else
-	netif_napi_add(netdev, &axdev->napi, ax_poll, AX88179_NAPI_WEIGHT);
+	netif_napi_add(netdev, &axdev->napi, ax_poll, 
+					axdev->driver_info->napi_weight);
 #endif
 #endif
 	ret = ax_get_mac_address(axdev);
@@ -2202,6 +2515,18 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 		goto out1;
 	}
 
+	if (comp == NULL)
+		axdev->ep1_bytes_per_interval = 0;
+	else 
+		axdev->ep1_bytes_per_interval = (udev->speed <= USB_SPEED_HIGH) 
+			? 8 : le16_to_cpu(comp->wBytesPerInterval);
+#ifdef ENABLE_INT_POLLING
+	if (axdev->ep1_bytes_per_interval == 0)
+    	axdev->int_polling_enable = true;
+	else
+    	axdev->int_polling_enable = false;
+#endif
+
 	device_set_wakeup_enable(&udev->dev, ax_can_wakeup(axdev));
 #ifdef ENABLE_INT_POLLING
 	INIT_DELAYED_WORK(&axdev->int_polling_work, __int_polling_work);
@@ -2215,7 +2540,8 @@ out1:
 	netif_napi_del(&axdev->napi);
 #endif
 #ifdef ENABLE_TX_TASKLET
-	tasklet_kill(&axdev->tx_tl);
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_kill(&axdev->tx_tl[i]);
 #endif
 	usb_set_intfdata(intf, NULL);
 out:
@@ -2226,6 +2552,9 @@ out:
 static void ax_disconnect(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
+#ifdef ENABLE_TX_TASKLET 
+	int i;
+#endif
 
 	usb_set_intfdata(intf, NULL);
 	if (axdev) {
@@ -2237,7 +2566,8 @@ static void ax_disconnect(struct usb_interface *intf)
 		netif_napi_del(&axdev->napi);
 #endif
 #ifdef ENABLE_TX_TASKLET
-		tasklet_kill(&axdev->tx_tl);
+		for (i = 0; i < axdev->driver_info->tx_num; i++)
+			tasklet_kill(&axdev->tx_tl[i]);
 #endif
 		unregister_netdev(axdev->netdev);
 		free_netdev(axdev->netdev);
@@ -2248,6 +2578,9 @@ static int ax_pre_reset(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
 	struct net_device *netdev;
+#ifdef ENABLE_TX_TASKLET 
+	int i;
+#endif
 
 	if (!axdev)
 		return 0;
@@ -2256,11 +2589,18 @@ static int ax_pre_reset(struct usb_interface *intf)
 	if (!netif_running(netdev))
 		return 0;
 
-	netif_stop_queue(netdev);
-#ifdef ENABLE_TX_TASKLET
-	tasklet_disable(&axdev->tx_tl);
-#endif
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netif_tx_stop_all_queues(netdev);
+	else
+		netif_stop_queue(netdev);
+
 	clear_bit(AX_ENABLE, &axdev->flags);
+
+#ifdef ENABLE_TX_TASKLET
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_disable(&axdev->tx_tl[i]);
+#endif
+
 	usb_kill_urb(axdev->intr_urb);
 #ifdef ENABLE_INT_POLLING
 	cancel_delayed_work_sync(&axdev->int_polling_work);
@@ -2278,6 +2618,9 @@ static int ax_post_reset(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
 	struct net_device *netdev;
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
 
 	if (!axdev)
 		return 0;
@@ -2292,6 +2635,11 @@ static int ax_post_reset(struct usb_interface *intf)
 		ax_start_rx(axdev);
 		mutex_unlock(&axdev->control);
 	}
+	
+#ifdef ENABLE_TX_TASKLET
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_disable(&axdev->tx_tl[i]);
+#endif
 
 #ifdef ENABLE_RX_TASKLET
 	tasklet_enable(&axdev->rx_tl);
@@ -2299,12 +2647,18 @@ static int ax_post_reset(struct usb_interface *intf)
 	napi_enable(&axdev->napi);
 #endif
 #ifdef ENABLE_TX_TASKLET
-	tasklet_enable(&axdev->tx_tl);
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+		tasklet_enable(&axdev->tx_tl[i]);
 #endif
-	netif_wake_queue(netdev);
-	usb_submit_urb(axdev->intr_urb, GFP_KERNEL);
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netif_tx_wake_all_queues(netdev);
+	else
+		netif_wake_queue(netdev);
+
+	ax_usb_submit_intr_urb(axdev->intr_urb, GFP_KERNEL);
 #ifdef ENABLE_INT_POLLING
-	schedule_delayed_work(&axdev->int_polling_work,
+	ax_schedule_delayed_work(&axdev->int_polling_work,
 			      msecs_to_jiffies(INT_POLLING_TIMER));
 #endif
 
@@ -2329,9 +2683,9 @@ static int ax_system_resume(struct ax_device *axdev)
 
 		axdev->driver_info->system_resume(axdev);
 		set_bit(AX_ENABLE, &axdev->flags);
-		usb_submit_urb(axdev->intr_urb, GFP_NOIO);
+		ax_usb_submit_intr_urb(axdev->intr_urb, GFP_NOIO);
 #ifdef ENABLE_INT_POLLING
-		schedule_delayed_work(&axdev->int_polling_work,
+		ax_schedule_delayed_work(&axdev->int_polling_work,
 				      msecs_to_jiffies(INT_POLLING_TIMER));
 #endif
 	}
@@ -2380,7 +2734,7 @@ static int ax_runtime_resume(struct ax_device *axdev)
 #endif	
 			local_bh_enable();
 		}
-		usb_submit_urb(axdev->intr_urb, GFP_NOIO);
+		ax_usb_submit_intr_urb(axdev->intr_urb, GFP_NOIO);
 	} else {
 		clear_bit(AX_SELECTIVE_SUSPEND, &axdev->flags);
 	}
@@ -2392,10 +2746,11 @@ static int ax_system_suspend(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
 	int ret = 0;
+#ifdef ENABLE_TX_TASKLET
+	int i;
+#endif
 
 	netif_device_detach(netdev);
-
-	
 
 	if (netif_running(netdev) && test_bit(AX_ENABLE, &axdev->flags)) {
 #ifndef ENABLE_RX_TASKLET
@@ -2405,7 +2760,8 @@ static int ax_system_suspend(struct ax_device *axdev)
 		clear_bit(AX_ENABLE, &axdev->flags);
 		usb_kill_urb(axdev->intr_urb);
 #ifdef ENABLE_TX_TASKLET
-		tasklet_disable(&axdev->tx_tl);
+		for (i = 0; i < axdev->driver_info->tx_num; i++)
+			tasklet_disable(&axdev->tx_tl[i]);
 #endif
 #ifdef ENABLE_INT_POLLING
 		cancel_delayed_work_sync(&axdev->int_polling_work);
@@ -2427,7 +2783,8 @@ static int ax_system_suspend(struct ax_device *axdev)
 #endif
 		
 #ifdef ENABLE_TX_TASKLET
-		tasklet_enable(&axdev->tx_tl);
+		for (i = 0; i < axdev->driver_info->tx_num; i++)
+			tasklet_enable(&axdev->tx_tl[i]);
 #endif
 	}
 
@@ -2455,7 +2812,6 @@ static int ax_runtime_suspend(struct ax_device *axdev)
 
 			napi_disable(napi);
 #endif
-			
 			ax_stop_rx(axdev);
 #ifdef ENABLE_RX_TASKLET
 			tasklet_enable(&axdev->rx_tl);
@@ -2514,37 +2870,39 @@ static int ax_reset_resume(struct usb_interface *intf)
 }
 
 const struct net_device_ops ax88179_netdev_ops = {
-	.ndo_open		= ax_open,
-	.ndo_stop		= ax_close,
+	.ndo_open				= ax_open,
+	.ndo_stop				= ax_close,
 #if KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE
-	.ndo_siocdevprivate	= ax88179_siocdevprivate,
-	.ndo_eth_ioctl		= ax88179_ioctl,
+	.ndo_siocdevprivate		= ax88179_siocdevprivate,
+	.ndo_eth_ioctl			= ax88179_ioctl,
 #endif
-	.ndo_do_ioctl		= ax88179_ioctl,
-	.ndo_start_xmit		= ax_start_xmit,
-	.ndo_tx_timeout		= ax_tx_timeout,
-	.ndo_set_features	= ax88179_set_features,
-	.ndo_set_rx_mode	= ax88179_set_multicast,
+	.ndo_do_ioctl			= ax88179_ioctl,
+	.ndo_start_xmit			= ax_start_xmit,
+	.ndo_tx_timeout			= ax_tx_timeout,
+	.ndo_set_features		= ax88179_set_features,
+	.ndo_set_rx_mode		= ax88179_set_multicast,
 	.ndo_set_mac_address	= ax88179_set_mac_addr,
-	.ndo_change_mtu		= ax88179_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu			= ax88179_change_mtu,
+	.ndo_validate_addr		= eth_validate_addr,
 };
 
 const struct net_device_ops ax88179a_netdev_ops = {
-	.ndo_open		= ax_open,
-	.ndo_stop		= ax_close,
+	.ndo_open				= ax_open,
+	.ndo_stop				= ax_close,
 #if KERNEL_VERSION(5, 15, 0) <= LINUX_VERSION_CODE
-	.ndo_siocdevprivate	= ax88179a_siocdevprivate,
-	.ndo_eth_ioctl		= ax88179a_ioctl,
+	.ndo_siocdevprivate		= ax88179a_siocdevprivate,
+	.ndo_eth_ioctl			= ax88179a_ioctl,
 #endif
-	.ndo_do_ioctl		= ax88179a_ioctl,
-	.ndo_start_xmit		= ax_start_xmit,
-	.ndo_tx_timeout		= ax_tx_timeout,
-	.ndo_set_features	= ax88179_set_features,
-	.ndo_set_rx_mode	= ax88179a_set_multicast,
+	.ndo_do_ioctl			= ax88179a_ioctl,
+	.ndo_start_xmit			= ax_start_xmit,
+	.ndo_tx_timeout			= ax_tx_timeout,
+	.ndo_set_features		= ax88179_set_features,
+	.ndo_set_rx_mode		= ax88179a_set_multicast,
 	.ndo_set_mac_address	= ax88179_set_mac_addr,
-	.ndo_change_mtu		= ax88179_change_mtu,
-	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_change_mtu			= ax88179_change_mtu,
+	.ndo_validate_addr		= eth_validate_addr,
+	.ndo_select_queue		= ax_select_queue,
+
 };
 
 #define ASIX_USB_DEVICE(vend, prod, lo, hi, info) { \
@@ -2570,31 +2928,31 @@ static const struct usb_device_id ax_usb_table[] = {
 	ASIX_USB_DEVICE(USB_VENDOR_ID_MAGIC_CONTROL, 0x0179, 0,
 			AX_BCDDEVICE_ID_179, ax88179_info),
 	ASIX_USB_DEVICE(USB_VENDOR_ID_ASIX, AX_DEVICE_ID_179X, 0,
-			AX_BCDDEVICE_ID_772D, ax88179a_info),
+			AX_BCDDEVICE_ID_772D, ax88772d_info),
 	ASIX_USB_DEVICE(USB_VENDOR_ID_ASIX, AX_DEVICE_ID_179X, 0,
 			AX_BCDDEVICE_ID_179A, ax88179a_info),
-#ifdef ENABLE_AX88279
 	ASIX_USB_DEVICE(USB_VENDOR_ID_ASIX, AX_DEVICE_ID_179X, 0,
 			AX_BCDDEVICE_ID_279, ax88279_info),
-#endif
+	ASIX_USB_DEVICE(USB_VENDOR_ID_ASIX, AX_DEVICE_ID_179X, 0,
+			AX_BCDDEVICE_ID_279A, ax88279a_info),
 	{/*END*/}
 };
 
 MODULE_DEVICE_TABLE(usb, ax_usb_table);
 
 static struct usb_driver ax_usb_driver = {
-	.name		= MODULENAME,
-	.id_table	= ax_usb_table,
-	.probe		= ax_probe,
-	.disconnect	= ax_disconnect,
-	.suspend	= ax_suspend,
-	.resume		= ax_resume,
-	.reset_resume	= ax_reset_resume,
-	.pre_reset	= ax_pre_reset,
-	.post_reset	= ax_post_reset,
-	.supports_autosuspend = 1,
+	.name						= MODULENAME,
+	.id_table					= ax_usb_table,
+	.probe						= ax_probe,
+	.disconnect					= ax_disconnect,
+	.suspend					= ax_suspend,
+	.resume						= ax_resume,
+	.reset_resume				= ax_reset_resume,
+	.pre_reset					= ax_pre_reset,
+	.post_reset					= ax_post_reset,
+	.supports_autosuspend 		= 1,
 #if KERNEL_VERSION(3, 5, 0) <= LINUX_VERSION_CODE
-	.disable_hub_initiated_lpm = 1,
+	.disable_hub_initiated_lpm 	= 1,
 #endif
 };
 

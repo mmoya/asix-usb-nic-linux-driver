@@ -20,7 +20,6 @@
 
 #define ptp_to_dev(ptp) container_of(ptp, struct ax_ptp_cfg, ptp_caps)
 
-#ifdef ENABLE_AX88279
 static void ax_reset_ptp_queue(struct ax_device *axdev)
 {
 	struct ax_ptp_cfg *ptp_cfg = axdev->ptp_cfg;
@@ -35,7 +34,6 @@ static void ax_reset_ptp_queue(struct ax_device *axdev)
 
 	memset(ptp_cfg->tx_ptp_info, 0, AX_PTP_INFO_SIZE * AX_PTP_QUEUE_SIZE);
 }
-#endif
 
 static int ax88179a_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
@@ -227,13 +225,13 @@ int ax88179a_ptp_init(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 	ptpset |= AX_PTP_CTRL_L3_EN | AX_PTP_CTRL_EN | AX_PTP_TX_PLUS_DELAY |
-		  AX_PTP_TX_FILTER_GENERAL_MSG | AX_PTP_RX_FILTER_GENERAL_MSG;
+		  	  AX_PTP_TX_FILTER_GENERAL_MSG | AX_PTP_RX_FILTER_GENERAL_MSG;
 	ret = ax_write_cmd(axdev, AX_PTP_CMD, AX88179A_PTP_CTRL_1,
 			    0, 1, &ptpset);
 	if (ret < 0)
 		return ret;
 
-	reg8 = AX_179A_PTP_INFO_SEG_SIZE * AX_PTP_HW_QUEUE_SIZE;
+	reg8 = AX_179A_PTP_INFO_SEG_SIZE * AX_PTP_HW_QUEUE_SIZE_179A;
 	ret = ax_write_cmd(axdev, AX_PTP_CMD, AX88179A_PTP_MEM_SEG_SIZE,
 			   0, 1, &reg8);
 	if (ret < 0)
@@ -325,11 +323,24 @@ int ax88179a_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 	return 0;
 }
 
-#ifdef ENABLE_AX88279
+int ax88279a_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
+{
+	int ret;
+
+	if (!enable) {
+		ret = ax_write_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_STOP, 
+					0x0000, 0x0000, NULL);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 int ax88279_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 {
-	u32 reg32 = 0;
 	int ret;
+	u32 reg32 = 0;
 
 	ret = ax_read_cmd(axdev, AX_PBUS_A32, 0xF8C8, 0x000C, 4, &reg32, 1);
 	if (ret < 0)
@@ -344,7 +355,6 @@ int ax88279_ptp_pps_ctrl(struct ax_device *axdev, u8 enable)
 
 	return 0;
 }
-#endif
 
 void ax88179a_ptp_remove(struct ax_device *axdev)
 {
@@ -381,6 +391,9 @@ static u8 ax_find_ptp_item(struct ax_device *axdev, struct _ptp_header *ptp,
 	u16 sequence_id;
 	u8 message_type = ptp->message_type;
 	int i, read_ptr;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	read_ptr = ptp_cfg->ptp_head;
 #ifdef ENABLE_PTP_DEBUG
@@ -410,6 +423,9 @@ static u8 ax_find_ptp_item(struct ax_device *axdev, struct _ptp_header *ptp,
 			time64 = timestamp_h * NSEC_PER_SEC;
 			time64 += timestamp_l & 0xFFFFFFFF;
 			memset(&shhwtstamps, 0, sizeof(shhwtstamps));
+#ifdef ENABLE_PTP_DEBUG			
+			printk("tx_ts_0x%llx", time64);
+#endif			
 			shhwtstamps.hwtstamp = ns_to_ktime(time64);
 			if (ptp->flags & 0x2 ||
 			    (ptp->message_type != 0 && ptp->message_type != 3))
@@ -429,6 +445,9 @@ static u8 ax_find_ptp_item(struct ax_device *axdev, struct _ptp_header *ptp,
 
 static void ax_tx_check_timestamp(struct ax_device *axdev, struct sk_buff *skb)
 {
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 	if (skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) {
 		struct _ptp_header ptp;
 		unsigned int ptp_msg_offset;
@@ -481,6 +500,9 @@ static void ax_tx_check_timestamp(struct ax_device *axdev, struct sk_buff *skb)
 static void ax_tx_timestamp(struct ax_device *axdev)
 {
 	struct sk_buff_head *tx_timestamp = &axdev->tx_timestamp;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	while (!skb_queue_empty(tx_timestamp)) {
 		struct sk_buff *skb;
@@ -496,6 +518,10 @@ static void ax_tx_timestamp(struct ax_device *axdev)
 static struct _ax_ptp_info *ax_ptp_info_transform(struct ax_device *axdev,
 						  void *data)
 {
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
+#ifndef ENABLE_AX88279A_PTP
 	struct _ax_ptp_info temp[AX_PTP_HW_QUEUE_SIZE] = {0};
 	int i;
 
@@ -517,6 +543,9 @@ static struct _ax_ptp_info *ax_ptp_info_transform(struct ax_device *axdev,
 	};
 
 	return (struct _ax_ptp_info *)data;
+#else
+	return NULL;
+#endif
 }
 
 
@@ -532,11 +561,12 @@ static void ax_ptp_ts_callback(struct urb *urb)
 	struct _ax_ptp_info *temp_ptp_info = ptp_info->ax_ptp_info;
 	int i, count = 0;
 #ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
 	printk("%s - Start urb->actual_length: %d",
 		__func__, urb->actual_length);
 #endif
 	if (urb->status < 0) {
-		printk(KERN_ERR "failed get ts (%d)", urb->status);
+		printk(KERN_ERR "failed get ts callback(%d)", urb->status);
 		goto free;
 	}
 
@@ -590,6 +620,9 @@ int ax_ptp_ts_read_cmd_async(struct ax_device *axdev)
 	struct urb *urb;
 	struct _ax_ptp_usb_info *info;
 	u16 size = AX_PTP_INFO_SIZE * AX_PTP_HW_QUEUE_SIZE;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	if (axdev->chip_version > AX_VERSION_AX88179A_772D)
 		return 0;
@@ -634,36 +667,48 @@ int ax_ptp_ts_read_cmd_async(struct ax_device *axdev)
 
 	return 0;
 }
-
+#ifdef ENABLE_PTP_DELAY
+void ax_rx_get_timestamp(struct sk_buff *skb, u64 *pkt_hdr, u64 delay)
+#else
 void ax_rx_get_timestamp(struct sk_buff *skb, u64 *pkt_hdr)
+#endif
 {
 	struct skb_shared_hwtstamps *shhwtstamps = skb_hwtstamps(skb);
 	u64 timestamp_h, timestamp_l;
 	u64 time64;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	timestamp_l = *((u64 *)(++pkt_hdr));
 	timestamp_h = *((u64 *)(++pkt_hdr));
 #ifdef ENABLE_PTP_DEBUG
-	printk("### (%s) h: 0x%llx, l: 0x%llx %lld###", __func__,
-		timestamp_h, timestamp_l, timestamp_l);
+	printk("### (%s) hh: 0x%llx, hl: 0x%llx l: 0x%llx###", __func__,
+		timestamp_h, timestamp_l>>32, timestamp_l & 0xFFFFFFFF);
 #endif
 	timestamp_h <<= 32;
 	timestamp_h |= (timestamp_l >> 32) & 0xFFFFFFFF;
 	time64 = (timestamp_h * NSEC_PER_SEC);
 	time64 += (timestamp_l & 0xFFFFFFFF);
 #ifdef ENABLE_PTP_DEBUG
-	printk("### (%s) h: %lld, time64: %lld ###", __func__,
-		timestamp_h, time64);
+	printk("### (%s) time64: 0x%llx ###", __func__, time64);
 #endif
 	memset(shhwtstamps, 0, sizeof(struct skb_shared_hwtstamps));
+	
+#ifdef ENABLE_PTP_DELAY
+	shhwtstamps->hwtstamp = ktime_sub_ns(ns_to_ktime(time64), delay);
+#else
 	shhwtstamps->hwtstamp = ns_to_ktime(time64);
+#endif
 }
 
-#ifdef ENABLE_AX88279
 static int ax_ptp_pbus_write(struct ax_device *axdev, u16 offset, u16 len,
 			     void *data)
 {
 	int ret = 0;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	ret = ax_write_cmd(axdev,
 			    AX_PBUS_A32,
@@ -699,13 +744,22 @@ static int ax_ptp_clk_read(struct ax_device *axdev, u16 offset, u16 len,
 {
 	int ret = 0;
 
-	ret = ax_read_cmd(axdev,
-			   AX_PTP_CLK,
-			   0x0002,
-			   offset,
-			   len,
-			   data,
-			   0);
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		ret = ax_read_cmd(axdev,
+				AX_PBUS_A32,
+				offset,
+				AX_PTP_REG_BASE_ADDR_HI,
+				len,
+				data,
+				0);
+	else
+		ret = ax_read_cmd(axdev,
+				AX_PTP_CLK,
+				0x0002,
+				offset,
+				len,
+				data,
+				0);
 
 	if (ret < 0)
 		return ret;
@@ -726,6 +780,9 @@ static int ax88279_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	u32 new_addend_val;
 	u64 adjust_val;
 	int neg_adj = 0, ret;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	if (ppb < 0) {
 		neg_adj = 1;
@@ -759,10 +816,11 @@ static int ax88279_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	u64 high_timer = 0;
 	s64 sec = 0;
 	s64 nsec = 0;
-	u8 timestamp[12] = {0};
+	u8 timestamp[AX_PTP_DATA_LEN] = {0};
 	int ret;
 
-	ret = ax_ptp_clk_read(axdev, AX_PTP_GET_80B_LCK_VAL0, 10, timestamp);
+	ret = ax_ptp_clk_read(axdev, AX_PTP_GET_80B_LCK_VAL0, 
+			AX_PTP_DATA_LEN, timestamp);
 	if (ret < 0)
 		return ret;
 
@@ -775,7 +833,8 @@ static int ax88279_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	memcpy(timestamp, &remainder, 4);
 	memcpy(&timestamp[4], &high_timer, 6);
 
-	ret = ax_ptp_clk_write(axdev, AX_PTP_SET_80B_LCK_VAL0, 12, timestamp);
+	ret = ax_ptp_clk_write(axdev, AX_PTP_SET_80B_LCK_VAL0, 
+			AX_PTP_DATA_LEN, timestamp);
 	if (ret < 0)
 		return ret;
 
@@ -789,10 +848,11 @@ static int ax88279_ptp_gettime64(struct ptp_clock_info *ptp,
 	struct ax_device *axdev = (struct ax_device *)ptp_cfg->axdev;
 	u64 sec = 0;
 	u32 nsec = 0;
-	u8 timestamp[12] = {0};
+	u8 timestamp[AX_PTP_DATA_LEN] = {0};
 	int ret;
 
-	ret = ax_ptp_clk_read(axdev, AX_PTP_GET_80B_LCK_VAL0, 10, timestamp);
+	ret = ax_ptp_clk_read(axdev, AX_PTP_GET_80B_LCK_VAL0, 
+			AX_PTP_DATA_LEN, timestamp);
 	if (ret < 0)
 		return ret;
 
@@ -811,7 +871,7 @@ static int ax88279_ptp_settime64(struct ptp_clock_info *ptp,
 	struct ax_device *axdev = (struct ax_device *)ptp_cfg->axdev;
 	u64 sec;
 	u32 nsec;
-	u8 timestamp[10] = {0};
+	u8 timestamp[AX_PTP_DATA_LEN] = {0};
 	int ret;
 
 	nsec = (u32)ts->tv_nsec;
@@ -819,7 +879,8 @@ static int ax88279_ptp_settime64(struct ptp_clock_info *ptp,
 	sec = (u64)ts->tv_sec;
 	memcpy(&timestamp[4], &sec, 6);
 
-	ret = ax_ptp_clk_write(axdev, AX_PTP_SET_80B_LCK_VAL0, 10, timestamp);
+	ret = ax_ptp_clk_write(axdev, AX_PTP_SET_80B_LCK_VAL0, 
+			AX_PTP_DATA_LEN, timestamp);
 	if (ret < 0)
 		return ret;
 
@@ -863,8 +924,9 @@ int ax88279_ptp_init(struct ax_device *axdev)
 	axdev->driver_info->ptp_pps_ctrl(axdev, 1);
 #endif
 
-	reg32 = (AX_PTP_MEM_SEG_SIZE_279_5 << 24) |
-		(AX_PTP_MEM_START_ADDR << 8) | AX_PTP_PTP_CPU_EN;
+	reg32 = (AX_PTP_MEM_SEG_SIZE_279_5 << 24) 	|
+			(AX_PTP_MEM_START_ADDR << 8) 		| 
+			AX_PTP_PTP_CPU_EN;
 	ret = ax_ptp_pbus_write(axdev, AX_PTP_TX_MEM_SETTING, 4, &reg32);
 	if (ret < 0)
 		return ret;
@@ -874,9 +936,9 @@ int ax88279_ptp_init(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
-	reg32 = AX_PTP_LCK_CTRL0_EN | AX_PTP_LCK_CTRL0_80B_NS_EN |
-		AX_PTP_LCK_CTRL0_80B_S_EN | AX_PTP_LCK_CTRL0_48B_EN |
-		AX_PTP_LCK_CTRL0_PPS_EN | AX_PTP_LCK_CTRL0_TX_DEL_VEC;
+	reg32 = AX_PTP_LCK_CTRL0_EN | AX_PTP_LCK_CTRL0_80B_NS_EN 	|
+			AX_PTP_LCK_CTRL0_80B_S_EN | AX_PTP_LCK_CTRL0_48B_EN |
+			AX_PTP_LCK_CTRL0_PPS_EN | AX_PTP_LCK_CTRL0_TX_DEL_VEC;
 	ret = ax_ptp_pbus_write(axdev, AX_PTP_LCK_CTRL0, 4, &reg32);
 	if (ret < 0)
 		return ret;
@@ -901,9 +963,9 @@ int ax88279_ptp_init(struct ax_device *axdev)
 
 	switch (link_info->eth_speed) {
 	case ETHER_LINK_100:
-		reg32 = (AX_IPG_COUNTER_100M) |
-			(AX_SOF_DELAY_COUNTER_100M << 8) |
-			(AX_VAILD_DELAY_COUNTER_100M << 16);
+		reg32 = (AX_IPG_COUNTER_100M) 				|
+				(AX_SOF_DELAY_COUNTER_100M << 8) 	|
+				(AX_VAILD_DELAY_COUNTER_100M << 16);
 		ret = ax_write_cmd(axdev, AX_PBUS_A32, AX_TX_READY_CTRL,
 				   AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
 		if (ret < 0)
@@ -915,15 +977,15 @@ int ax88279_ptp_init(struct ax_device *axdev)
 			return ret;
 
 		reg32 = AX_PTP_TX_CTRL0_DEFAULT |
-			(0x10 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
+				(0x10 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
 		ret = ax_ptp_pbus_write(axdev, AX_PTP_TX_CTRL0, 4, &reg32);
 		if (ret < 0)
 			return ret;
 		break;
 	case ETHER_LINK_1000:
-		reg32 = (AX_IPG_COUNTER_1G) |
-			(AX_SOF_DELAY_COUNTER_1G << 8) |
-			(AX_VAILD_DELAY_COUNTER_1G << 16);
+		reg32 = (AX_IPG_COUNTER_1G) 			|
+				(AX_SOF_DELAY_COUNTER_1G << 8) 	|
+				(AX_VAILD_DELAY_COUNTER_1G << 16);
 		ret = ax_write_cmd(axdev, AX_PBUS_A32, AX_TX_READY_CTRL,
 				   AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
 		if (ret < 0)
@@ -935,7 +997,7 @@ int ax88279_ptp_init(struct ax_device *axdev)
 			return ret;
 
 		reg32 = AX_PTP_TX_CTRL0_DEFAULT |
-			(0x8 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
+				(0x8 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
 		ret = ax_ptp_pbus_write(axdev, AX_PTP_TX_CTRL0, 4, &reg32);
 		if (ret < 0)
 			return ret;
@@ -946,8 +1008,9 @@ int ax88279_ptp_init(struct ax_device *axdev)
 		if (ret < 0)
 			return ret;
 
-		reg32 = AX_PTP_TX_CTRL0_DEFAULT | AX_PTP_TXC0_XGMII_EN |
-			(0x8 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
+		reg32 = AX_PTP_TX_CTRL0_DEFAULT | 
+				AX_PTP_TXC0_XGMII_EN 	|
+				(0x8 << AX_TXC0_VAL_DELAY_CNT_SHIFT);
 		ret = ax_ptp_pbus_write(axdev, AX_PTP_TX_CTRL0, 4, &reg32);
 		if (ret < 0)
 			return ret;
@@ -978,15 +1041,234 @@ int ax88279_ptp_init(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
-	reg32 = (0 << AX_DIVIDE_PTP_CLK_SHIFT) |
-		(1 << AX_DIVIDE_AES_CLK_SHIFT) |
-		AX_PTP_CLK_EN | AX_AES_CLK_EN |
-		AX_PTP_CLK_SELECT_DIVIDE | AX_AES_CLK_SELECT_DIVIDE |
-		AX_XGMAC_TX_CLK_EN | AX_XGMAC_RX_CLK_EN;
+	reg32 = (0 << AX_DIVIDE_PTP_CLK_SHIFT) 	|
+			(1 << AX_DIVIDE_AES_CLK_SHIFT) 	|
+			AX_PTP_CLK_EN | AX_AES_CLK_EN 	|
+			AX_PTP_CLK_SELECT_DIVIDE	 	| 
+			AX_AES_CLK_SELECT_DIVIDE 		|
+			AX_XGMAC_TX_CLK_EN 				| 
+			AX_XGMAC_RX_CLK_EN;
 	ret = ax_write_cmd(axdev, AX_PBUS_A32, AX_MAC_CLK_CTRL,
 			   AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
 	if (ret < 0)
 		return ret;
+
+	return 0;
+}
+
+int ax88279a_ptp_init(struct ax_device *axdev)
+{
+	struct ax_link_info *link_info = &axdev->link_info;
+	u8 reg8;
+	u32 reg32, mask, value;
+	struct ptp_ring_settings settings;
+	int ret;
+
+#ifdef ENABLE_PTP_250M_CLK
+	
+	/* CLK SEL for 250M */
+	ax_read_cmd(axdev, AX_PBUS_A32, 0x300C, 
+		AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32, 0);
+	reg32 = 0x111;
+    ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x300C, 
+		AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+	
+	reg32 = 0x80000000;
+	ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_ADDEND, 4, &reg32);
+
+	reg32 = 0x00000008;
+	ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_PERIOD, 4, &reg32);
+
+#endif
+
+#ifdef ENABLE_PTP_125M_CLK
+	reg32 = 0xcccccccc;
+	ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_ADDEND, 4, &reg32);
+
+	reg32 = 0x0000000A;
+	ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_PERIOD, 4, &reg32);
+#endif
+
+#ifdef ENABLE_PTP_UTP_CLK
+	
+	if (link_info->eth_speed == ETHER_LINK_2500) {
+		/* CLK SEL for UTP clk */
+		ax_read_cmd(axdev, AX_PBUS_A32, 0x300C, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32, 0);
+		mask  = 0x7 << 12;
+		value = 2 << 12;
+		reg32 &= ~mask;
+		reg32 |=  value;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x300C, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+
+		reg32 = 0x80000000;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_ADDEND, 4, &reg32);
+
+		reg32 = 0x0000000A;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_PERIOD, 4, &reg32);
+	} else {
+		/* CLK SEL for UTP clk */
+		ax_read_cmd(axdev, AX_PBUS_A32, 0x300C, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32, 0);
+		mask  = 0x7 << 12;
+		value = 2 << 12;
+		reg32 &= ~mask;
+		reg32 |=  value;
+		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x300C, 
+			AX_PBUS_REG_BASE_ADDR_HI, 4, &reg32);
+		if (ret < 0)
+			return ret;
+
+		reg32 = 0x80000000;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_ADDEND, 4, &reg32);
+
+		reg32 = 0x00000008;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TIMER_PERIOD, 4, &reg32);
+	}
+#endif
+
+#ifdef ENABLE_PTP_GPIO_SLTB
+	/* PTP_TOD0 GPIO */
+	ax_read_cmd(axdev, AX_PBUS_A32, 0xF8C4, 0x000C, 4, &reg32, 0);
+	reg32 |= BIT(12);
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0xF8C4, 0x000C, 4, &reg32);
+	if (ret < 0)
+		return ret;
+
+	/* PTP_PPS0_MODE GPIO */
+	ax_read_cmd(axdev, AX_PBUS_A32, 0xF8C8, 0x000C, 4, &reg32, 0);
+	reg32 |= BIT(14);
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0xF8C8, 0x000C, 4, &reg32);
+	if (ret < 0)
+		return ret;
+#endif
+
+	ax_reset_ptp_queue(axdev);
+
+#ifdef ENABLE_PTP_FUNC
+	axdev->driver_info->ptp_pps_ctrl(axdev, 1);
+#endif
+
+	ret = ax_write_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_STOP, 
+				0x0000, 0x0000, NULL);
+	if (ret < 0)
+		return ret;
+
+	ret = ax_read_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_RING_SETTINGS, 
+				0x0000, 0x000C, &settings, 0);
+	if (ret < 0)
+		return ret;
+
+	settings.ts_ring_size = settings.ts_ring_max_size;
+	ret = ax_write_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_RING_SETTINGS, 
+				0x0000, 0x000C, &settings);
+	if (ret < 0)
+		return ret;
+
+	ret = ax_write_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_HW_CONFIG, 
+				0x0000, 0x0000, NULL);
+	if (ret < 0)
+		return ret;
+
+	ret = ax_write_cmd(axdev, VENDOR_CMD_PTP_SW_MODE, SW_MODE_START, 
+				0x0000, 0x0000, NULL);
+	if (ret < 0)
+		return ret;
+
+	reg32 = DEFAULT_ASSERT_TIME_NS;
+	ax_ptp_pbus_write(axdev, PTP_LCK_PPS_ASSERT_TIME, 4, &reg32);
+
+	reg32 = PTP_LCK_EN | PTP_LCK_80B_TIMER_NS_EN | PTP_LCK_PTP_RX_MAC_SEL |
+			PTP_LCK_PTP_TX_MAC_SEL | PTP_LCK_PTP_TX_MAC_SFD_SEL | 0x20000 |
+			PTP_LCK_80B_TIMER_S_EN | PTP_LCK_48B_TIMER_EN | PTP_LCK_PPS_EN;
+	ax_ptp_pbus_write(axdev, PTP_LCK_CTRL, 4, &reg32);
+
+	ax_read_cmd(axdev, AX_PBUS_A32, 0x10C0, 0x0107, 4, &reg32, 0);
+
+	reg32 |= TRAIL_UDPV6_EN;
+
+	ax_write_cmd(axdev, AX_PBUS_A32, 0x10C0, 0x0107, 4, &reg32);
+
+	switch (link_info->eth_speed) {
+	case ETHER_LINK_10:
+#ifdef ENABLE_PTP_DELAY
+		reg32 = 3764;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TX_DELAY, 4, &reg32);
+#endif
+	case ETHER_LINK_100:
+#ifdef ENABLE_PTP_DELAY
+		reg32 = 88;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TX_DELAY, 4, &reg32);
+#endif
+		reg32 = PTP_RX_CTRL_0_DEFAULT;
+		ax_ptp_pbus_write(axdev, PTP_RX_CTRL_0, 4, &reg32);
+		reg32 = PTP_TX_CTRL_0_DEFAULT | PTP_TX_MAC_SEL |
+				(0x16 << PTP_TX_VAL_DELAY_CNT_SHIFT);
+		ax_ptp_pbus_write(axdev, PTP_TX_CTRL_0, 4, &reg32);
+		reg32 = 0x4B;
+		ax_ptp_pbus_write(axdev, PTP_DMA_CTRL, 4, &reg32);
+		reg32 = 0xF;
+		ax_ptp_pbus_write(axdev, PTP_TX_MAC_VAL_CNT, 4, &reg32);
+		break;
+	case ETHER_LINK_1000:
+#ifdef ENABLE_PTP_DELAY
+		reg32 = 80;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TX_DELAY, 4, &reg32);
+#endif
+		reg32 = PTP_RX_CTRL_0_DEFAULT;
+		ax_ptp_pbus_write(axdev, PTP_RX_CTRL_0, 4, &reg32);
+		reg32 = PTP_TX_CTRL_0_DEFAULT | PTP_TX_MAC_SEL |
+				(0x8 << PTP_TX_VAL_DELAY_CNT_SHIFT);
+		ax_ptp_pbus_write(axdev, PTP_TX_CTRL_0, 4, &reg32);
+#ifdef ENABLE_NORMAL_PKT_PTP
+	reg32 = 0x3FF15;
+	ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x3000, 0x0012, 4, &reg32);
+	if (ret < 0)
+		return ret;
+#endif
+		reg32 = 0x7;
+		ax_ptp_pbus_write(axdev, PTP_TX_MAC_VAL_CNT, 4, &reg32);
+		reg32 = 0x4B;
+		ax_ptp_pbus_write(axdev, PTP_DMA_CTRL, 4, &reg32);
+		break;
+	case ETHER_LINK_2500:
+#ifdef ENABLE_PTP_DELAY
+		reg32 = 266;
+		ax_ptp_pbus_write(axdev, PTP_LCK_TX_DELAY, 4, &reg32);
+#endif
+
+		reg32 = 0x4B;
+		ax_ptp_pbus_write(axdev, PTP_DMA_CTRL, 4, &reg32);
+		reg32 = 0xF;
+		ax_ptp_pbus_write(axdev, PTP_TX_MAC_VAL_CNT, 4, &reg32);
+
+		reg32 = 0x3FF01;
+		ax_ptp_pbus_write(axdev, PTP_RX_CTRL_0, 4, &reg32);
+		reg32 = 0x3FF31;
+		ax_ptp_pbus_write(axdev, PTP_TX_CTRL_0, 4, &reg32);
+		reg32 = 0;
+		ax_ptp_pbus_write(axdev, PTP_TX_MAC_VAL_CNT, 4, &reg32);
+
+#ifdef ENABLE_AX88279A_PTP_2P5G_FRC
+		reg32 = 0x10306F;
+#else
+		reg32 = 0x02306F;
+#endif
+		ax_ptp_pbus_write(axdev, PTP_LCK_CTRL, 4, &reg32);
+
+		break;
+	default:
+		break;
+	}
+
+#ifndef ENABLE_PTP_DELAY
+	reg32 = 0;
+	ax_ptp_pbus_write(axdev, PTP_LCK_TX_DELAY, 4, &reg32);
+	ax_ptp_pbus_write(axdev, PTP_LCK_RX_DELAY, 4, &reg32);
+#endif
 
 	return 0;
 }
@@ -1010,6 +1292,9 @@ static void ax88279_read_ts_callback(struct urb *urb)
 	struct ax_ptp_cfg *ptp_cfg;
 	struct _ax_ptp_info *temp_ptp_info;
 	int i, index;
+#ifdef ENABLE_PTP_DEBUG
+	printk("%s\n", __func__);
+#endif
 
 	axdev = urb->context;
 	if (!axdev)
@@ -1029,39 +1314,62 @@ static void ax88279_read_ts_callback(struct urb *urb)
 
 	if (urb->status < 0) {
 		dev_err(&axdev->intf->dev,
-			"failed get ts (%d)", urb->status);
+			"failed get ts read_ts(%d)", urb->status);
 		goto out;
 	}
 #ifdef ENABLE_PTP_DEBUG
-	printk("EP4 Valid: 0x%x", ptp_cfg->ep4_buf[AX_PTP_EP4_SIZE - 1]);
+	printk("EP4 Valid: 0x%x", ptp_cfg->ep4_buf[12]);
 #endif
+
+#ifdef ENABLE_AX88279A_PTP
+	index = 0;
+#else
 	index = (ptp_cfg->ep4_buf[AX_PTP_EP4_SIZE - 1] & AX_TS_SEG_1) ?
-		0 : (AX_PTP_INFO_SIZE * AX_PTP_HW_QUEUE_SIZE);
+		0 : (AX_PTP_INFO_SIZE * AX_PTP_HW_QUEUE_SIZE); /*TOCHECK king set 0*/
+#endif
+
 #ifdef ENABLE_PTP_DEBUG
 	printk("index: %d", index);
 #endif
 	temp_ptp_info = (struct _ax_ptp_info *)&ptp_cfg->ep4_buf[index];
 	for (i = 0; i < AX_PTP_HW_QUEUE_SIZE; i++) {
 		if (temp_ptp_info[i].status) {
-			ptp_cfg->tx_ptp_info[ptp_cfg->ptp_tail++] =
-							temp_ptp_info[i];
+			memcpy(&ptp_cfg->tx_ptp_info[ptp_cfg->ptp_tail++],
+				&temp_ptp_info[i], AX_PTP_INFO_SIZE);
+
 			if (ptp_cfg->ptp_tail == AX_PTP_QUEUE_SIZE)
 				ptp_cfg->ptp_tail = 0;
 			ptp_cfg->num_items++;
-#ifdef ENABLE_PTP_DEBUG
-printk("### ptp_tail: %ld, ptp_head: %ld, num_items: %ld",
-	ptp_cfg->ptp_tail, ptp_cfg->ptp_head, ptp_cfg->num_items);
-printk("### (%s) - DATA %d -------------###", __func__, i);
-printk("### status: %d", temp_ptp_info[i].status);
-printk("### type: 0x%02x", temp_ptp_info[i].msg_type);
-printk("### s_id: 0x%04x", temp_ptp_info[i].sequence_id);
-printk("### nsec: 0x%08x", temp_ptp_info[i].nsec);
-printk("###  sec: 0x%04x%08x", temp_ptp_info[i].sec_h, temp_ptp_info[i].sec_l);
-printk("### ----------------------------###\n");
+
+			if (temp_ptp_info[i].usr_id) {
+#ifdef ENABLE_NORMAL_PKT_PTP_DEBUG_NORMAL
+				printk("### status: %d", temp_ptp_info[i].status);
+				printk("### tx_ts: %d", temp_ptp_info[i].tx_ts);
+				printk("### usr_id: %d", temp_ptp_info[i].usr_id);
+				printk("### type: 0x%02x", temp_ptp_info[i].msg_type);
+				printk("### s_id: 0x%04x", temp_ptp_info[i].sequence_id);
+				printk("### nsec: 0x%08x", temp_ptp_info[i].nsec);
+				printk("###  sec: 0x%04x%08x", temp_ptp_info[i].sec_h, temp_ptp_info[i].sec_l);
+				printk("### ----------------------------###\n");
 #endif
+			} else {
+				printk("*****ptp packet*****\n");
+#ifdef ENABLE_NORMAL_PKT_PTP_DEBUG_PTP
+				printk("### status: %d", temp_ptp_info[i].status);
+				printk("### tx_ts: %d", temp_ptp_info[i].tx_ts);
+				printk("### usr_id: %d", temp_ptp_info[i].usr_id);
+				printk("### type: 0x%02x", temp_ptp_info[i].msg_type);
+				printk("### s_id: 0x%04x", temp_ptp_info[i].sequence_id);
+				printk("### nsec: 0x%08x", temp_ptp_info[i].nsec);
+				printk("###  sec: 0x%04x%08x", temp_ptp_info[i].sec_h, temp_ptp_info[i].sec_l);
+				printk("### ----------------------------###\n");
+#endif
+			}
+
 		}
 	}
 
+	if (temp_ptp_info[i].usr_id == 0)
 	ax_tx_timestamp(axdev);
 out:
 	ax88279_submit_ts(axdev);
@@ -1117,7 +1425,6 @@ void ax88279_stop_get_ts(struct ax_device *axdev)
 	if (ptp_cfg->urb)
 		usb_kill_urb(ptp_cfg->urb);
 }
-#endif
 
 int ax_ptp_register(struct ax_device *axdev)
 {
@@ -1130,7 +1437,7 @@ int ax_ptp_register(struct ax_device *axdev)
 	axdev->ptp_cfg = ptp_cfg;
 
 	switch (axdev->chip_version) {
-#ifdef ENABLE_AX88279
+	case AX_VERSION_AX88279A:
 	case AX_VERSION_AX88279:
 		ptp_cfg->urb = usb_alloc_urb(0, GFP_KERNEL);
 		if (!ptp_cfg->urb)
@@ -1138,7 +1445,6 @@ int ax_ptp_register(struct ax_device *axdev)
 
 		ptp_cfg->ptp_caps = ax88279_ptp_clock;
 		break;
-#endif
 	case AX_VERSION_AX88179A_772D:
 		if (axdev->sub_version < 3)
 			return 0;
@@ -1163,10 +1469,8 @@ int ax_ptp_register(struct ax_device *axdev)
 
 	return 0;
 fail:
-#ifdef ENABLE_AX88279
 	if (ptp_cfg->urb)
 		usb_free_urb(axdev->intr_urb);
-#endif
 	kfree(axdev->ptp_cfg);
 
 	return ret;

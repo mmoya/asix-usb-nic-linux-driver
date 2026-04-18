@@ -23,15 +23,32 @@
 #include <net/if.h>
 #include <getopt.h>
 #include <endian.h>
+#include <stdbool.h>
+#include <time.h>
+#include <errno.h>
 #if NET_INTERFACE == INTERFACE_SCAN
 #include <ifaddrs.h>
 #endif
 #include "ax_ioctl.h"
 #ifdef ENABLE_IOCTL_DEBUG
 #define NOT_PROGRAM
+#define DEBUG_PRINT(fmt, args...) do {		\
+	struct timespec ts;						\
+	clock_gettime(CLOCK_MONOTONIC, &ts);	\
+	printf("[%5ld.%06ld] " fmt,				\
+		ts.tv_sec, ts.tv_nsec / 1000,		\
+		## args);							\
+} while (0)
+#else
+#define DEBUG_PRINT(fmt, args...)
 #endif
 #define RELOAD_DELAY_TIME	10	// sec
-#define EFUSE_NUM_BLOCK	32
+#define EFUSE_NUM_BLOCK		32
+#define EFUSE_START_BLOCK 	5
+#define INFE_MAX_NUM 		255
+#define FW_VER_CHECK_LEN 	6
+#define RETRY_SCAN_DEVICE 	5
+#define DEV_DESC_SIZE		sizeof(struct _ax_dev_desc)
 
 #define PRINT_IOCTL_FAIL(ret) \
 fprintf(stderr, "%s: ioctl failed. (err: %d)\n", __func__, ret)
@@ -40,10 +57,10 @@ fprintf(stderr, "%s: Scaning device failed.\n", __func__)
 #define PRINT_ALLCATE_MEM_FAIL \
 fprintf(stderr, "%s: Fail to allocate memory.\n", __func__)
 #define PRINT_LOAD_FILE_FAIL \
-fprintf(stderr, "%s: Read file failed.\n", __func__)
+fprintf(stderr, "%s: Load file failed.\n", __func__)
 
 #define AX88179A_IOCTL_VERSION \
-"AX88179B/AX88179A/AX88772E/AX88772D Linux Flash/eFuse Programming Tool v2.0.0"
+"AX88179B/AX88179A/AX88772E/AX88772D Linux Flash/eFuse Programming Tool v2.3.0"
 
 const char help_str1[] =
 "./ax88179b_179a_772e_772d_programmer help [command]\n"
@@ -67,10 +84,11 @@ const char readserial_str1[] =
 static const char readserial_str2[] = "";
 
 const char writeflash_str1[] =
-"./ax88179b_179a_772e_772d_programmer wflash [file]\n"
+"./ax88179b_179a_772e_772d_programmer wflash [file] -m (Optional)\n"
 "    -- AX88179B_179A_772E_772D Write Flash\n";
 const char writeflash_str2[] =
-"        [file]    - Flash file path\n";
+"        [file]\t- Flash file path\n"
+"        -m\t- Write multi-device\n";
 
 const char writeefuse_str1[] =
 "./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -w [wol] -f [File] --led0 [value]"
@@ -79,7 +97,7 @@ const char writeefuse_str1[] =
 const char writeefuse_str2[] =
 "        -m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)\n"
 "        -s [SN]     - Serial number\n"
-"        -w [wol]    	 - wake on LAN (XXXXXXXX) X:digit\n"
+"        -w [wol]    - wake on LAN (XXXXXXXX) X:digit\n"
 "        -f [File]   - eFuse file path\n"
 "        --led0 [value]   - value: control_blink (XXXX_XXXX)\n"
 "        --led1 [value]   - value: control_blink (XXXX_XXXX)\n"
@@ -105,6 +123,8 @@ static int writeefuse_func(struct ax_command_info *info);
 static int readefuse_func(struct ax_command_info *info);
 static int reload_func(struct ax_command_info *info);
 static int scan_ax_device(struct ifreq *ifr, int inet_sock);
+static int scan_ax_multi_device(struct ifreq *ifr, int inet_sock, 
+	struct ifreq **ifr_list, unsigned int *infe_num);
 
 struct _command_list ax88179a_cmd_list[] = {
 	{
@@ -197,9 +217,9 @@ static unsigned char sample_type11[] = {
 };
 
 static unsigned char sample_type15[] = {
- 0x0F, 0x7D, 0x01, 0x63,
- 0x81, 0x7F, 0x7F, 0x5F,
- 0x5D, 0x2F, 0x07, 0xE8,
+ 0x0F, 0x61, 0x01, 0x6B,
+ 0x81, 0x00, 0x00, 0x5F,
+ 0x2D, 0x2F, 0x07, 0xE8,
  0x04, 0x7D, 0x00, 0xC8,
  0x08, 0x01, 0x04, 0x00
 };
@@ -208,10 +228,10 @@ static unsigned char sample_type15[] = {
 #pragma pack(1)
 enum _ef_Type_Def {
 	EF_TYPE_REV = 0x00,
-	EF_TYPE_01 = 0x01,
-	EF_TYPE_04 = 0x04,
-	EF_TYPE_11 = 0x0B,
-	EF_TYPE_15 = 0x0F,
+	EF_TYPE_01 	= 0x01,
+	EF_TYPE_04 	= 0x04,
+	EF_TYPE_11 	= 0x0B,
+	EF_TYPE_15 	= 0x0F,
 };
 struct _ef_type {
 #if __BYTE_ORDER == __BIG_ENDIAN
@@ -321,9 +341,9 @@ static unsigned long STR_TO_U32(const char *cp, char **endp, unsigned int base)
 	if (!base)
 		base = 10;
 
-	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp-'0' : (islower(*cp)
-	    ? toupper(*cp) : *cp)-'A'+10) < base) {
-		result = result*base + value;
+	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp - '0' : (islower(*cp)
+	    ? toupper(*cp) : *cp) -'A' + 10) < base) {
+		result = result * base + value;
 		cp++;
 	}
 	if (endp)
@@ -364,7 +384,7 @@ static int autosuspend_enable(struct ax_command_info *info,
 	ioctl_cmd.ioctl_cmd = AX88179A_AUTOSUSPEND_EN;
 
 	ioctl_cmd.autosuspend.enable = enable;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -388,17 +408,15 @@ static int read_version(struct ax_command_info *info, char *version)
 
 	memset(ioctl_cmd.version.version, 0, 16);
 
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
-	if (ret < 0) {
-		PRINT_IOCTL_FAIL(ret);
-		return -FAIL_IOCTL;
-	}
 
 	memcpy(version, ioctl_cmd.version.version, 16);
 
-	return SUCCESS;
+	return (ret >= 0) ? SUCCESS : ret;
 }
 
 static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
@@ -407,12 +425,6 @@ static int read_mac_address(struct ax_command_info *info, unsigned char *mac)
 	int ret;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
-
-	ret = scan_ax_device(ifr, info->inet_sock);
-	if (ret < 0) {
-		PRINT_SCAN_DEV_FAIL;
-		return ret;
-	}
 
 	ifr->ifr_flags &= 0;
 	ret = ioctl(info->inet_sock, SIOCSIFFLAGS, ifr);
@@ -460,7 +472,8 @@ static int read_serial_number(struct ax_command_info *info, unsigned char *seria
 
     ioctl_cmd.ioctl_cmd = AX88179A_DUMP_EFUSE;
     ioctl_cmd.flash.length = 20;
-    ifr->ifr_data = (caddr_t)&ioctl_cmd;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;   
+	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
     for (i = EFUSE_NUM_BLOCK - 1; i > 0; i--) {
         ioctl_cmd.flash.offset = i;
@@ -487,6 +500,9 @@ static int readversion_func(struct ax_command_info *info)
 {
 	char version[16] = {0};
 	int i, ret;
+	unsigned int dev_cnt = 0, dev_num;
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -500,16 +516,43 @@ static int readversion_func(struct ax_command_info *info)
 			}
 		}
 	}
+	
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
 
-	autosuspend_enable(info, 0);
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
+		PRINT_SCAN_DEV_FAIL;
+		goto out;
+	}
 
-	ret = read_version(info, version);
-	if (ret == SUCCESS)
-		printf("Firmware Version: %s\n", version);
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		autosuspend_enable(info, 0);
 
-	usleep(20000);
+		ret = read_version(info, version);
+		if (ret == SUCCESS)
+			printf("%s Firmware Version: %s\n", 
+				info->ifr->ifr_name, version);
 
-	autosuspend_enable(info, 1);
+		usleep(20000);
+
+		autosuspend_enable(info, 1);
+	}
+
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
 
 	return ret;
 }
@@ -518,6 +561,9 @@ static int readmac_func(struct ax_command_info *info)
 {
 	unsigned char mac[6] = {0};
 	int i, ret;
+	unsigned int dev_cnt = 0, dev_num;
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -532,15 +578,42 @@ static int readmac_func(struct ax_command_info *info)
 		}
 	}
 
-	ret = read_mac_address(info, mac);
-	if (ret == SUCCESS)
-		printf("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
-			mac[0],
-			mac[1],
-			mac[2],
-			mac[3],
-			mac[4],
-			mac[5]);
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
+	
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
+		PRINT_SCAN_DEV_FAIL;
+		goto out;
+	}
+
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		ret = read_mac_address(info, mac);
+		if (ret == SUCCESS)
+			printf("%s MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n",
+				info->ifr->ifr_name,
+				mac[0],
+				mac[1],
+				mac[2],
+				mac[3],
+				mac[4],
+				mac[5]);
+	}
+
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
 
 	return ret;
 }
@@ -584,12 +657,13 @@ static int write_flash(struct ax_command_info *info, unsigned char *data,
 	ioctl_cmd.flash.offset = offset;
 	ioctl_cmd.flash.length = len;
 	ioctl_cmd.flash.buf = data;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
 	if (ret < 0) {
 		if (ioctl_cmd.flash.status)
-			fprintf(stderr, "FLASH WRITE status: %d",
+			fprintf(stderr, "FLASH WRITE status: %d\n",
 				ioctl_cmd.flash.status);
 		PRINT_IOCTL_FAIL(ret);
 		return ret;
@@ -612,12 +686,13 @@ static int read_flash(struct ax_command_info *info, unsigned char *data,
 	ioctl_cmd.flash.offset = offset;
 	ioctl_cmd.flash.length = len;
 	ioctl_cmd.flash.buf = data;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
 	if (ret < 0) {
 		if (ioctl_cmd.flash.status)
-			fprintf(stderr, "FLASH READ status: %d",
+			fprintf(stderr, "FLASH READ status: %d\n",
 				ioctl_cmd.flash.status);
 		PRINT_IOCTL_FAIL(ret);
 		return -FAIL_IOCTL;
@@ -636,7 +711,7 @@ static int erase_flash(struct ax_command_info *info)
 
 	ioctl_cmd.ioctl_cmd = AX88179A_ERASE_FLASH;
 	ioctl_cmd.flash.status = 0;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
@@ -656,6 +731,7 @@ static int boot_to_rom(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	ioctl_cmd.ioctl_cmd = AX88179A_ROOT_2_ROM;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	ioctl(info->inet_sock, AX_PRIVATE, ifr);
 
@@ -670,10 +746,38 @@ static int sw_reset(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	ioctl_cmd.ioctl_cmd = AX88179A_SW_RESET;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	ioctl(info->inet_sock, AX_PRIVATE, ifr);
 
 	usleep(RELOAD_DELAY_TIME * 1000000);
+
+	return SUCCESS;
+}
+
+/*Control device state*/
+static int set_if_state(struct ax_command_info *info, 
+		int inet_sock, int up)
+{
+	int ret;
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+
+	ret = ioctl(inet_sock, SIOCGIFFLAGS, ifr);
+	if (ret < 0) {
+		PRINT_IOCTL_FAIL(ret);
+		return -FAIL_IOCTL;
+	}
+
+	if (up == 1)
+		ifr->ifr_flags |= IFF_UP;
+	else
+		ifr->ifr_flags &= ~IFF_UP;
+
+	ret = ioctl(inet_sock, SIOCSIFFLAGS, ifr);
+	if (ret < 0) {
+		PRINT_IOCTL_FAIL(ret);
+		return -FAIL_IOCTL;
+	}
 
 	return SUCCESS;
 }
@@ -687,129 +791,262 @@ static int writeflash_func(struct ax_command_info *info)
 	int length = 0;
 	int i, offset, len, ret;
 	char fw_version[16] = {0};
+	bool multi_write_flag = false;
+	bool restart_if_flag = false;
+	unsigned int dev_num;
+	unsigned int write_cnt = 0;
+	unsigned int restart_if_cnt = 0;
+	unsigned int retry_time = 0;
+	unsigned int rescan_dev_cnt;
+	struct ifreq **ifr_list;
+	struct ifreq **ifr_entry;
+	char r_version[16] = {0};
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	if (info->argc != 3) {
-		for (i = 0; ax88179a_cmd_list[i].cmd != NULL; i++) {
-			if (strncmp(info->argv[1], ax88179a_cmd_list[i].cmd,
-				    strlen(ax88179a_cmd_list[i].cmd)) == 0) {
-				printf("%s%s\n", ax88179a_cmd_list[i].help_ins,
-				       ax88179a_cmd_list[i].help_desc);
-				return -FAIL_INVALID_PARAMETER;
+		/*Multi-device case*/
+		if (info->argc == 4 && strcmp(info->argv[3], "-m") == 0) {
+			multi_write_flag =  true;
+		} else {
+			for (i = 0; ax88179a_cmd_list[i].cmd != NULL; i++) {
+				if (strncmp(info->argv[1], ax88179a_cmd_list[i].cmd,
+						strlen(ax88179a_cmd_list[i].cmd)) == 0) {
+					printf("%s%s\n", ax88179a_cmd_list[i].help_ins,
+						ax88179a_cmd_list[i].help_desc);
+					return -FAIL_INVALID_PARAMETER;
+				}
 			}
-		}
+		}	
 	}
 
-	autosuspend_enable(info, 0);
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	ifr_entry = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_entry) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++) {
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
+		ifr_entry[dev_num] = malloc(sizeof(struct ifreq));
+	}
 
-	boot_to_rom(info);
-
-	usleep(1000000);
-
-	ret = scan_ax_device(ifr, info->inet_sock);
+	/*Scan multi-device and store device information in ifr_list*/
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &write_cnt);
 	if (ret < 0) {
 		PRINT_SCAN_DEV_FAIL;
-		return ret;
+		goto out;
 	}
 
-	ret = erase_flash(info);
-	if (ret < 0) 
-		return ret;
+	printf("Scan Device List:\n");
+	for (dev_num = 0; dev_num < write_cnt; dev_num++)
+		printf("\tDevice%u, %s\n", dev_num, ifr_list[dev_num]->ifr_name);
 
-	pFile = fopen(info->argv[2], "rb");
-	if (pFile == NULL) {
-		fprintf(stderr, "%s: Fail to open %s file.\n",
-			__func__, info->argv[2]);
-		ret = -FAIL_LOAD_FILE;
-		goto fail;
+	for (dev_num = 0; dev_num < write_cnt; dev_num++) {
+		/*If the multi-device feature isn't open,
+		  the program only write first device the down other device*/
+		if (dev_num > 0 && multi_write_flag == false) {
+			info->ifr = ifr_list[dev_num];
+			set_if_state(info, info->inet_sock, 0);
+
+			restart_if_flag = true;
+		} else 
+			memcpy(ifr_entry[dev_num], ifr_list[dev_num], 
+				sizeof(struct ifreq));
 	}
 
-	fseek(pFile, 0, SEEK_END);
-	length = ftell(pFile);
-	fseek(pFile, 0, SEEK_SET);
+	if (restart_if_flag == true) {
+		restart_if_cnt = write_cnt;
+		write_cnt = 1;
+	}
+	/*Boot to ROM device*/
+	for (dev_num = 0; dev_num < write_cnt; dev_num++) {
+		info->ifr = ifr_entry[dev_num];
 
-	wbuf = (unsigned char *)malloc((length + 256) & ~(0xFF));
-	if (!wbuf) {
-		PRINT_ALLCATE_MEM_FAIL;
-		ret = -FAIL_ALLCATE_MEM;
+		autosuspend_enable(info, 0);
+		boot_to_rom(info);
+
+		usleep(1000000);
+
+		/*Read FW version in order to check if booting to ROM successful*/
+		ret = read_version(info, r_version);
+		if (errno != EPIPE)
+			goto out;
+	}
+	/*After boot to ROM, the device names might be changed. 
+	  As a result, program will rescan device*/
+	rescan_dev_cnt = write_cnt;
+	write_cnt = 0;
+	while (rescan_dev_cnt != write_cnt) {
+		/*Retry several times make sure the device number is correct*/
+		ret = scan_ax_multi_device(ifr, info->inet_sock, 
+				ifr_entry, &write_cnt);
+		if (ret < 0) {
+			PRINT_SCAN_DEV_FAIL;
+			goto out;
+		}
+		DEBUG_PRINT("=== Recan Device List:\n");
+		for (dev_num = 0; dev_num < write_cnt; dev_num++)
+			DEBUG_PRINT("\t=== Device%u, %s\n", 
+				dev_num, ifr_entry[dev_num]->ifr_name);
+		if (retry_time > RETRY_SCAN_DEVICE) {
+			PRINT_SCAN_DEV_FAIL;
+			goto out;
+		}
+		retry_time++;
+		/*Add a delay time insure system could get the device*/
+		usleep(1000000);
+	}
+	/*Write flash into device*/
+	for (dev_num = 0; dev_num < write_cnt; dev_num++) {
+		printf("Write FW into device%u flash\n", dev_num);
+		info->ifr = ifr_entry[dev_num];
+
+		ret = erase_flash(info);
+		if (ret < 0) 
+			goto fail;
+
+		pFile = fopen(info->argv[2], "rb");
+		if (pFile == NULL) {
+			fprintf(stderr, "%s: Fail to open %s file.\n",
+				__func__, info->argv[2]);
+			ret = -FAIL_LOAD_FILE;
+			goto fail;
+		}
+
+		fseek(pFile, 0, SEEK_END);
+		length = ftell(pFile);
+		fseek(pFile, 0, SEEK_SET);
+
+		wbuf = (unsigned char *)malloc((length + 256) & ~(0xFF));
+		if (!wbuf) {
+			PRINT_ALLCATE_MEM_FAIL;
+			ret = -FAIL_ALLCATE_MEM;
+			goto fail;
+		}
+		memset(wbuf, 0, (length + 256) & ~(0xFF));
+		rbuf = (unsigned char *)malloc((length + 256) & ~(0xFF));
+		if (!rbuf) {
+			PRINT_ALLCATE_MEM_FAIL;
+			ret = -FAIL_ALLCATE_MEM;
+			goto fail;
+		}
+		memset(rbuf, 0, (length + 256) & ~(0xFF));
+
+		result = fread(wbuf, 1, length, pFile);
+		if (result != length) {
+			PRINT_LOAD_FILE_FAIL;
+			ret = -PRINT_LOAD_FILE_FAIL;
+			goto fail;
+		}
+
+		offset = SWAP_32(*(unsigned long *)&wbuf[4]);
+		len = (SWAP_32(*(unsigned long *)&wbuf[8]) + 256) & ~(0xFF);
+
+		sprintf(fw_version, "v%d.%d.%d",
+			wbuf[offset + 0x1000],
+			wbuf[offset + 0x1001],
+			wbuf[offset + 0x1002]);
+
+		ret = write_flash(info, wbuf, offset, len);
+		if (ret < 0)
+			goto fail;
+
+		ret = read_flash(info, rbuf, offset, len);
+		if (ret < 0)
+			goto fail;
+
+		if (memcmp(&wbuf[offset], &rbuf[offset], len) != 0) {
+			fprintf(stderr, "%s: Program the FW failed.\n", __func__);
+			ret = -FAIL_FLASH_WRITE;
+			goto fail;
+		}
+
+		len = SWAP_32(*(unsigned long *)&wbuf[4]);
+
+		ret = write_flash(info, wbuf, 0, len);
+		if (ret < 0)
+			goto fail;
+
+		ret = read_flash(info, rbuf, 0, (length + 256) & ~(0xFF));
+		if (ret < 0)
+			goto fail;
+
+		if (memcmp(wbuf, rbuf,
+			(SWAP_32(*(unsigned long *)&wbuf[8]) +
+				SWAP_32(*(unsigned long *)&wbuf[4]))) != 0) {
+			fprintf(stderr, "%s: Program the Flash failed.\n", __func__);
+			ret = -FAIL_FLASH_WRITE;
+			goto fail;
+		}
+		/*Reset device make sure the program leave ROM*/
+		sw_reset(info);
+	}
+	/*Rescan device because the device names might be changed back*/
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_entry, &write_cnt);
+	DEBUG_PRINT("=== Rescan Device List:\n");
+	for (dev_num = 0; dev_num < write_cnt; dev_num++)
+		DEBUG_PRINT("\t=== Device%u, %s\n", 
+			dev_num, ifr_entry[dev_num]->ifr_name);
+	if (ret < 0) {
+		PRINT_SCAN_DEV_FAIL;
 		goto fail;
 	}
-	memset(wbuf, 0, (length + 256) & ~(0xFF));
-	rbuf = (unsigned char *)malloc((length + 256) & ~(0xFF));
-	if (!rbuf) {
-		PRINT_ALLCATE_MEM_FAIL;
-		ret = -FAIL_ALLCATE_MEM;
-		goto fail;
-	}
-	memset(rbuf, 0, (length + 256) & ~(0xFF));
+	/*Change the FW version*/
+	for (dev_num = 0; dev_num < write_cnt; dev_num++) {
 
-	result = fread(wbuf, 1, length, pFile);
-	if (result != length) {
-		PRINT_LOAD_FILE_FAIL;
-		ret = -PRINT_LOAD_FILE_FAIL;
-		goto fail;
-	}
+		info->ifr = ifr_entry[dev_num];
 
-	offset = SWAP_32(*(unsigned long *)&wbuf[4]);
-	len = (SWAP_32(*(unsigned long *)&wbuf[8]) + 256) & ~(0xFF);
+		ret = read_version(info, r_version);
+		if (ret == SUCCESS) {
+			if (memcmp(fw_version, r_version, FW_VER_CHECK_LEN) != 0)
+				goto fail;
+		}
+		printf("Program the Flash Succeed on %s, FW Version: %s\n", 
+			ifr_entry[dev_num]->ifr_name, fw_version);
 
-	sprintf(fw_version, "v%d.%d.%d",
-		wbuf[offset + 0x1000],
-		wbuf[offset + 0x1001],
-		wbuf[offset + 0x1002]);
-	printf("File FW Version: %s\n", fw_version);
-
-	ret = write_flash(info, wbuf, offset, len);
-	if (ret < 0)
-		goto fail;
-
-	ret = read_flash(info, rbuf, offset, len);
-	if (ret < 0)
-		goto fail;
-
-	if (memcmp(&wbuf[offset], &rbuf[offset], len) != 0) {
-		fprintf(stderr, "%s: Program the FW failed.\n", __func__);
-		ret = -FAIL_FLASH_WRITE;
-		goto fail;
-	}
-
-	len = SWAP_32(*(unsigned long *)&wbuf[4]);
-
-	ret = write_flash(info, wbuf, 0, len);
-	if (ret < 0)
-		goto fail;
-
-	ret = read_flash(info, rbuf, 0, (length + 256) & ~(0xFF));
-	if (ret < 0)
-		goto fail;
-
-	if (memcmp(wbuf, rbuf,
-		   (SWAP_32(*(unsigned long *)&wbuf[8]) +
-		    SWAP_32(*(unsigned long *)&wbuf[4]))) != 0) {
-		fprintf(stderr, "%s: Program the Flash failed.\n", __func__);
-		ret = -FAIL_FLASH_WRITE;
-		goto fail;
+		autosuspend_enable(info, 1);
 	}
 
 	ret = SUCCESS;
 	goto out;
-fail:
-	erase_flash(info);
-out:
-	if (rbuf)
-		free(rbuf);
-	if (wbuf)
-		free(wbuf);
-	if (pFile)
-		fclose(pFile);
+	fail:
+		printf("Program the Flash Failed on device%u\n", dev_num);
+		erase_flash(info);
 
-	autosuspend_enable(info, 1);
+	out:
+		/*Up device*/
+		if (restart_if_flag == true) {
+			for (dev_num = 1; dev_num < restart_if_cnt; dev_num++) {
+				info->ifr = ifr_list[dev_num];
+				set_if_state(info, info->inet_sock, 1);
+			}
+		}
+		if (rbuf)
+			free(rbuf);
+		if (wbuf)
+			free(wbuf);
+		if (pFile)
+			fclose(pFile);
+		for (dev_num = 0; dev_num < write_cnt; dev_num++) {
+			if (ifr_list[dev_num])
+				free(ifr_list[dev_num]);
+			if (ifr_entry[dev_num])
+				free(ifr_entry[dev_num]);
+		}
+		if (ifr_list)
+			free(ifr_list);
+		if (ifr_entry)
+			free(ifr_entry);
 
 	return ret;
 }
-
-#define EFUSE_NUM_BLOCK	32
 
 static void checksum_efuse_block(unsigned char *block)
 {
@@ -833,19 +1070,67 @@ static void checksum_efuse_block(unsigned char *block)
 	block[0] = (block[0] & 0xF) | ((Sum << 4) & 0xF0);
 }
 
-static int __find_efuse_index(struct _ef_data_struct *efuse,
-			      enum _ef_Type_Def type)
+static int check_efuse_block_valid(unsigned char *data)
 {
-	int i;
+	unsigned int sum = 0;
+	unsigned int tmp;
+	int j = 0;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 6; i < EFUSE_NUM_BLOCK; i++) {
-		if (efuse[i].ef_data.type01.type.type == type)
-			return i;
+	if ((data[0] & 0xF) == EF_TYPE_REV)
+		return -FAIL_IVALID_VALUE;
+
+	for (j = 0; j < 4; j++) {
+		if (j == 0)
+			sum += data[j] & 0xF;
+		else
+			sum += data[j];
 	}
 
-	return -FAIL_GENERIAL_ERROR;
+	while (sum > 0xF)
+		sum = (sum & 0xF) + (sum >> 4);
+
+	sum = 0xF - sum;
+
+	tmp = (data[0] & 0xF) | ((sum << 4) & 0xF0);
+
+	if (tmp != data[0])
+		return -FAIL_IVALID_CHKSUM;
+
+	return SUCCESS;
+}
+
+static int __find_efuse_index(struct _ef_data_struct *efuse,
+			      enum _ef_Type_Def type, bool check_csum)
+{
+	int i, j, inv;
+	int index = -FAIL_GENERIAL_ERROR;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	for (i = EFUSE_START_BLOCK; i < EFUSE_NUM_BLOCK; i++) {
+		if (efuse[i].ef_data.type01.type.type == type) {
+			unsigned char *block = (unsigned char *)&efuse[i];
+
+			/*If the first 4 elements of block are 0xFF, block is invaild*/
+			inv = 0;
+			for (j = 0; j < 4; j++) 
+				if (block[j] == 0xFF)
+					inv++;
+			if (inv == 4) 
+				continue;
+			
+			/*Check csum if neccessary,
+			  csum need to check when using dump data*/
+			if (check_csum)
+				if (check_efuse_block_valid(block) < 0)
+					continue;
+
+			index = i;
+		}
+	}
+	return index;
 }
 
 static int change_mac_address(struct _ef_data_struct *efuse, unsigned int *mac)
@@ -854,7 +1139,7 @@ static int change_mac_address(struct _ef_data_struct *efuse, unsigned int *mac)
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	index = __find_efuse_index(efuse, EF_TYPE_01);
+	index = __find_efuse_index(efuse, EF_TYPE_01, false);
 	if (index == -FAIL_GENERIAL_ERROR) {
 		fprintf(stderr, "%s: Not found type 1 from eFuese file\n",
 			__func__);
@@ -874,7 +1159,7 @@ static int change_serial_number(struct _ef_data_struct *efuse, char *serial)
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	index = __find_efuse_index(efuse, EF_TYPE_04);
+	index = __find_efuse_index(efuse, EF_TYPE_04, false);
 	if (index == -FAIL_GENERIAL_ERROR) {
 		fprintf(stderr, "%s: Not found type 4 from eFuese file\n",
 			__func__);
@@ -895,7 +1180,7 @@ static int change_wol(struct _ef_data_struct *efuse, char *wol)
 	unsigned int s5wolEn = 0;
 	unsigned int pmeEn = 0;
 
-	index = __find_efuse_index(efuse, EF_TYPE_15);
+	index = __find_efuse_index(efuse, EF_TYPE_15, false);
 	if (index == -FAIL_GENERIAL_ERROR) {
 		fprintf(stderr, "%s: Not found type 15 from eFuese file\n",
 			__func__);
@@ -906,7 +1191,7 @@ static int change_wol(struct _ef_data_struct *efuse, char *wol)
 
 	for (i = 0; i < 8; i++) {
 		unsigned char bit_value = 0;
-		bit_value = (wol[i]-'0');
+		bit_value = (wol[i] - '0');
 
 		if (i == 0 && bit_value == 1) { // Disable Remote Wakeup
 			dwolEn = 1;
@@ -947,7 +1232,6 @@ static int change_wol(struct _ef_data_struct *efuse, char *wol)
 			if (i == 7 && bit_value == 1) { // PME IND Enable
 				efuse[index].ef_data.type15.flag2 |= 0x40;
 			}
-
 		}
 	}
 
@@ -972,42 +1256,96 @@ static void set_led(struct _ef_data_struct *efuse, char *led, int led_num)
 	checksum_efuse_block((unsigned char *)efuse);
 }
 
+static int string_to_num(int c) 
+{
+	if ('0' <= c && c <= '9')
+		return c - '0';
+	else if ('a' <= c && c <= 'f')
+		return c - 'a' + 10;
+	else if ('A' <= c && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+static int load_efuse_by_byte(FILE *pFile, unsigned int *out) 
+{
+	int c;
+	int hi, lo;
+
+	/*Skip whitespace*/
+	do {
+		c = fgetc(pFile);
+		if (c == EOF) return EOF;
+	} while (isspace(c));
+
+	/*Get first digit*/
+	hi = string_to_num(c);
+	if (hi < 0) {
+		ungetc(c, pFile);
+		return 0;
+	}
+	
+	/*Get second digit*/
+	c = fgetc(pFile);
+	lo = string_to_num(c);
+	if (c == EOF || lo < 0) {
+		if (c != EOF)
+			ungetc(c, pFile);
+		return 0;
+	}
+
+	*out = ((hi << 4) | lo);
+
+	return 1;
+}
+
 static int load_efuse_from_file(char *file_path, unsigned char *data)
 {
 	FILE *pFile = NULL;
 	int i, j;
+	int ret;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	if (!file_path)
-		return -FAIL_LOAD_FILE;
+	if (!file_path) {
+		ret = -FAIL_LOAD_FILE;
+		goto out;
+	}
 
 	pFile = fopen(file_path, "rb");
 	if (pFile == NULL) {
-		fprintf(stderr, "%s: Fail to open %s file.\n",
+		fprintf(stderr, "%s: %s doesn't exist.\n",
 			__func__, file_path);
-		return -FAIL_LOAD_FILE;
+		ret = -FAIL_LOAD_FILE;
+		goto out;
 	}
 
 	for (i = 0; i < (20 * EFUSE_NUM_BLOCK); i += 4) {
-		unsigned int size = 0;
+		int size = 0;
 
 		for (j = 3; j >= 0; j--) {
 			unsigned int tmp;
-
-			size = fscanf(pFile, "%02X ", &tmp);
-			if (size == ~0)
-				break;
+			
+			size = load_efuse_by_byte(pFile, &tmp);
+			if (size == EOF) {
+				ret = SUCCESS;
+				goto out;
+			} else if (size != 1) { 
+				fprintf(stderr, "%s: Read invalid value from %s.\n",
+					__func__, file_path);
+				ret = -FAIL_LOAD_FILE;
+				goto out;
+			} 
 			data[i + j] = tmp & 0xFF;
 		}
-		if (size == ~0)
-			break;
 	}
+	ret = SUCCESS;
 
+out:
 	if (pFile)
 		fclose(pFile);
 
-	return SUCCESS;
+	return ret;
 }
 
 static int __dump_efuse(struct ax_command_info *info,
@@ -1032,6 +1370,7 @@ static int __dump_efuse(struct ax_command_info *info,
 
 	ioctl_cmd.ioctl_cmd = AX88179A_DUMP_EFUSE;
 	ioctl_cmd.flash.length = 20;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	for (i = block_offset; i < limit; i++) {
@@ -1060,7 +1399,7 @@ static int dump_efuse_from_chip(struct ax_command_info *info,
 {
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	return __dump_efuse(info, efuse, 0, 32);
+	return __dump_efuse(info, efuse, 0, EFUSE_NUM_BLOCK);
 }
 
 static int find_empty_block_index(struct _ef_data_struct *efuse)
@@ -1069,12 +1408,30 @@ static int find_empty_block_index(struct _ef_data_struct *efuse)
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
-	for (i = 6; i < EFUSE_NUM_BLOCK; i++) {
+	if (efuse == NULL) {
+		fprintf(stderr, "%s: efuse pointer is NULL.\n", __func__);
+		return -1;
+	}
+
+	for (i = EFUSE_START_BLOCK; i < EFUSE_NUM_BLOCK; i++) {
 		if (efuse[i].ef_data.type01.type.type == EF_TYPE_REV)
 			break;
 	}
 
 	return (i == EFUSE_NUM_BLOCK) ? -1 : i;
+}
+
+static void get_avl_efuse_blk_num(struct _ef_data_struct *efuse) 
+{
+	int empty_idx;
+
+	empty_idx = find_empty_block_index(efuse);
+	if (empty_idx < 0) {
+		printf("[WARNING] No eFuse blocks are available\n");
+		return;
+	}
+	printf("[INFO] %d eFuse blocks are still available.\n", 
+					EFUSE_NUM_BLOCK - empty_idx);
 }
 
 #ifdef ENABLE_IOCTL_DEBUG
@@ -1094,45 +1451,14 @@ static void dump_efuse_data(struct _ef_data_struct *efuse)
 }
 #define DUMP_EFUSE_DATA(efuse) dump_efuse_data(efuse)
 #else
-#define DUMP_EFUSE_DATA(efuse) while(0){}
+#define DUMP_EFUSE_DATA(efuse) while (0) {}
 #endif
 
-static int check_efuse_block_valid(unsigned char *data)
-{
-	unsigned int sum = 0;
-	unsigned int tmp;
-	int j = 0;
-
-	DEBUG_PRINT("=== %s - Start\n", __func__);
-
-	if ((data[0] & 0xF) == EF_TYPE_REV)
-		return -FAIL_IVALID_VALUE;
-
-	for (j = 0; j < 4; j++) {
-		if (j == 0)
-			sum += data[j] & 0xF;
-		else
-			sum += data[j];
-	}
-
-	while (sum > 0xF)
-		sum = (sum & 0xF) + (sum >> 4);
-
-	sum = 0xF - sum;
-
-	tmp = (data[0] & 0xF) | ((sum << 4) & 0xF0);
-
-	if (tmp != data[0])
-		return -FAIL_IVALID_CHKSUM;
-
-	return SUCCESS;
-}
-
 static int merge_efuse(struct _ef_data_struct *dump_efuse,
-		       struct _ef_data_struct *file_efuse,
+		       struct _ef_data_struct *prog_efuse,
 		       unsigned int *program_block, unsigned int *program_index)
 {
-	int dump_empty_index, i, j;
+	int dump_empty_index, i, j, prog_data_num = 0;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1142,26 +1468,40 @@ static int merge_efuse(struct _ef_data_struct *dump_efuse,
 		return -FAIL_NON_EMPTY_RFUSE_BLOCK;
 	}
 
+	/*Calculate numbers of program data*/
+	for (i = EFUSE_START_BLOCK; i < EFUSE_NUM_BLOCK; i++) {
+		if (prog_efuse[i].ef_data.type01.type.type != EF_TYPE_REV)
+			prog_data_num++;
+	}
+
+	/*If the numbers of program data is bigger than remain efuse, 
+	  function return fail*/
+	if (prog_data_num > (EFUSE_NUM_BLOCK - dump_empty_index)) {
+		fprintf(stderr, "%s: Non enough block to write.\n", __func__);
+		return -FAIL_NON_EMPTY_RFUSE_BLOCK;
+	}
+
 	*program_block = 0;
 	*program_index = -1;
-	for (i = 6, j = dump_empty_index; i < EFUSE_NUM_BLOCK; i++, j++) {
-		unsigned char *block = (unsigned char *)&file_efuse[i];
+
+	for (i = EFUSE_START_BLOCK, j = dump_empty_index; i < EFUSE_NUM_BLOCK; i++, j++) {
+		unsigned char *block = (unsigned char *)&prog_efuse[i];
 		int ret;
 
-		if (file_efuse[i].ef_data.type01.type.type == EF_TYPE_REV)
+		if (prog_efuse[i].ef_data.type01.type.type == EF_TYPE_REV)
 			break;
-
+		
 		ret = check_efuse_block_valid(block);
 		if (ret < 0) {
 			fprintf(stderr,
-				"%s: ERROR eFuse block in file.\n", __func__);
+				"%s: ERROR eFuse block invalid.\n", __func__);
 			return ret;
 		}
-		memcpy(&dump_efuse[j], &file_efuse[i], EF_DATA_STRUCT_SIZE);
+		memcpy(&dump_efuse[j], &prog_efuse[i], EF_DATA_STRUCT_SIZE);
 		*program_block += 1;
 	}
-
 	*program_index = dump_empty_index;
+
 	return SUCCESS;
 }
 
@@ -1188,6 +1528,7 @@ static int __program_efuse_block(struct ax_command_info *info,
 
 	ioctl_cmd.ioctl_cmd = AX88179A_PROGRAM_EFUSE;
 	ioctl_cmd.flash.length = 20;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	for (i = block_offset; i < limit; i++) {
@@ -1233,31 +1574,61 @@ struct __wefuse {
 	unsigned int MAC[6];
 };
 
-static void creat_sample_efuse(struct _ef_data_struct *efuse,
-			       struct __wefuse *par)
+/*
+efuse may be dump data or file data
+prog_efuse is the data to be written to efuse.
+*/
+static void get_efuse_write_data(struct _ef_data_struct *prog_efuse,
+					struct _ef_data_struct *efuse,
+			       	struct __wefuse *par, bool check_csum)
 {
-	int index = 6;
+	int data_efuse_index = EFUSE_START_BLOCK;
+	int index = -1;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	if (par->mac_address) {
-		memcpy(&efuse[index], sample_type1, EF_TYPE_STRUCT_SIZE_01);
-		if (!strcasecmp(par->device , "AX88179A"))
-			efuse[index].ef_data.type01.bcdDevice = htobe16(0x0200);
-		if (!strcasecmp(par->device , "AX88772D"))
-			efuse[index].ef_data.type01.bcdDevice = htobe16(0x0300);
-		index++;
+		index = __find_efuse_index(efuse, EF_TYPE_01, check_csum);
+		/*	If the index returns a value less than 0, 
+			it means that there is no value of this type in the file.
+			Therefore, use sample value.*/
+		if (index < 0) {
+			memcpy(&prog_efuse[data_efuse_index], sample_type1, EF_TYPE_STRUCT_SIZE_01);
+			if (par->device) {
+				if (!strcasecmp(par->device , "AX88179A") ||
+					!strcasecmp(par->device , "AX88179B"))
+					prog_efuse[data_efuse_index].ef_data.type01.bcdDevice = htobe16(0x0200);
+				else if (!strcasecmp(par->device , "AX88772D") || 
+					!strcasecmp(par->device , "AX88772E"))
+					prog_efuse[data_efuse_index].ef_data.type01.bcdDevice = htobe16(0x0300);
+			}
+		} else {
+			memcpy(&prog_efuse[data_efuse_index], &efuse[index], EF_TYPE_STRUCT_SIZE_01);
+		}
+		data_efuse_index++;
 	}
 
-	if (par->serial_num)
-		memcpy(&efuse[index++], sample_type4, EF_TYPE_STRUCT_SIZE_04);
+	if (par->serial_num) {
+		index = __find_efuse_index(efuse, EF_TYPE_04, check_csum);
+		if (index < 0) 
+			memcpy(&prog_efuse[data_efuse_index++], sample_type4, EF_TYPE_STRUCT_SIZE_04);
+		else
+			memcpy(&prog_efuse[data_efuse_index++], &efuse[index], EF_TYPE_STRUCT_SIZE_04);
+	}
 
 	if (par->led0)
-		set_led(&efuse[index++], par->led0, 0);
+		set_led(&prog_efuse[data_efuse_index++], par->led0, 0);
 
 	if (par->led1)
-		set_led(&efuse[index++], par->led1, 1);
+		set_led(&prog_efuse[data_efuse_index++], par->led1, 1);
 
-	if (par->wol)
-		memcpy(&efuse[index++], sample_type15, EF_TYPE_STRUCT_SIZE_15);
+	if (par->wol) {
+		index = __find_efuse_index(efuse, EF_TYPE_15, check_csum);
+		if (index < 0) 
+			memcpy(&prog_efuse[data_efuse_index++], sample_type15, EF_TYPE_STRUCT_SIZE_15);
+		else
+			memcpy(&prog_efuse[data_efuse_index++], &efuse[index], EF_TYPE_STRUCT_SIZE_15);
+	}
 }
 
 static int print_msg(char *cmd)
@@ -1287,14 +1658,18 @@ static int __check_led_parameter(char *led)
 		if (!isxdigit(*led++))
 			return 1;
 	} while (*led);
+	
 	return 0;
 }
 
 static int __check_wefuse_parameter(struct __wefuse *par)
 {
 	if (par->mac_address)
-		if (!par->device && !par->file_path)
+		if (!par->device && !par->file_path) {
+			printf("FAIL: Setting MAC address requires "
+				"device name (-p) or eFuse file (-f)\n");
 			return 1;
+		}
 
 	if (!par->led0 ^ !par->led1)
 		return 1;
@@ -1302,15 +1677,194 @@ static int __check_wefuse_parameter(struct __wefuse *par)
 	return 0;
 }
 
+static int usb_cmd_func(struct ax_command_info *info, 
+				unsigned int ops, unsigned int cmd, unsigned int value, 
+				unsigned int index, unsigned int size, unsigned int *data)
+{
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct _ax_ioctl_command ioctl_cmd;
+	struct _ax_usb_command *usb_cmd;
+	int i, ret;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	if (scan_ax_device(ifr, info->inet_sock)) {
+		PRINT_SCAN_DEV_FAIL;
+		return -FAIL_SCAN_DEV;
+	}
+
+	usb_cmd = &ioctl_cmd.usb_cmd;
+	memset(usb_cmd, 0, sizeof(*usb_cmd));
+
+	usb_cmd->ops = ops;
+	usb_cmd->cmd = cmd;
+	usb_cmd->value = value;
+	usb_cmd->index = index;
+	usb_cmd->size = size;
+
+	if (usb_cmd->ops > USB_WRITE_OPS) 
+		return -FAIL_INVALID_PARAMETER;
+
+	if (usb_cmd->ops == USB_WRITE_OPS)
+		usb_cmd->cmd_data = *data;
+
+	ioctl_cmd.ioctl_cmd = AX_USB_COMMAND;
+	ioctl_cmd.size = usb_cmd->size;
+	ioctl_cmd.buf = NULL;
+	ioctl_cmd.type = 0;
+	ioctl_cmd.delay = 0;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+	ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
+	if (ret < 0) {
+		PRINT_IOCTL_FAIL(ret);
+		return -FAIL_IOCTL;
+	}
+
+	if (usb_cmd->ops == USB_READ_OPS) {
+		DEBUG_PRINT("=== Read Command: CMD: 0x%02X\n", usb_cmd->cmd);
+		DEBUG_PRINT("=== wValue: 0x%04X, wIndex: 0x%04X, wLength: 0x%04X\n",
+			usb_cmd->value, usb_cmd->index, usb_cmd->size);
+		DEBUG_PRINT("=== Data: 0x%08lX\n", usb_cmd->cmd_data);
+	}
+	*data = usb_cmd->cmd_data;
+
+	DEBUG_PRINT("=== USB Command completely\n");
+
+	return SUCCESS;
+}
+
+static int get_dev_desc(struct ax_command_info *info, 
+						struct _ax_dev_desc* ax_dev_desc)
+{
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	struct _ax_ioctl_command ioctl_cmd;
+	int ret;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	ioctl_cmd.ioctl_cmd = AX88179A_GET_DEV_DESC;
+
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+
+	ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
+	if (ret < 0) {
+		PRINT_IOCTL_FAIL(ret);
+		return -FAIL_IOCTL;
+	}
+	memcpy(ax_dev_desc, &ioctl_cmd.ax_dev_desc, DEV_DESC_SIZE);
+
+	return SUCCESS;
+}
+
+static int __check_dev_name(struct ax_command_info *info, char* dev_name) 
+{
+	unsigned int product_id;
+	struct _ax_dev_desc ax_dev_desc;
+
+	/*Get product ID to get ECO number*/
+	usb_cmd_func(info, 0, 0x10, 0x18e0, 0, 4, &product_id);
+	product_id &= 0xF;
+
+	/*Get product BCD ID*/
+	get_dev_desc(info, &ax_dev_desc);
+	DEBUG_PRINT("=== %s device description: 0x%04x\n", 
+				__func__, ax_dev_desc.bcd_id);
+
+	if (ax_dev_desc.bcd_id == 0x0200) {
+		if ((!strcasecmp(dev_name, "AX88179A") && (product_id < 0x4)) ||
+			(!strcasecmp(dev_name, "AX88179B") && (product_id == 0x4))) 
+			return SUCCESS;
+	} else if (ax_dev_desc.bcd_id == 0x0300) {
+		if ((!strcasecmp(dev_name, "AX88772D") && (product_id < 0x4)) ||
+			(!strcasecmp(dev_name, "AX88772E") && (product_id == 0x4))) 
+			return SUCCESS;
+	}
+	fprintf(stderr, "%s, Fail: Device name incorrect.\n", __func__);
+
+	return -FAIL_IVALID_VALUE;
+}
+
+static int get_file_prog_data(struct ax_command_info *info, 
+				struct _ef_data_struct *prog_efuse, 
+				struct _ef_data_struct *file_efuse) {
+	int i, j;
+	int inv;
+	int index = EFUSE_START_BLOCK;
+	int ret;
+	struct _ax_dev_desc ax_dev_desc;
+	unsigned char mac[6] = {0};
+	unsigned int mac_address[6] = {0};
+	unsigned char serial_number[19] = {0};
+
+	/*Put file available data into prog data*/
+	for (i = EFUSE_START_BLOCK; i < EFUSE_NUM_BLOCK; i++) {
+		unsigned char *block = (unsigned char *)&file_efuse[i];
+
+		/*If the first 4 elements of block are 0xFF, block is invaild*/
+		inv = 0;
+		for (j = 0; j < 4; j++) 
+			if (block[j] == 0xFF)
+				inv++;
+		if (inv == 4) 
+			continue;
+		
+		if (file_efuse[i].ef_data.type01.type.type == EF_TYPE_REV)
+			break;
+
+		/*Calculate checksum*/
+		checksum_efuse_block((unsigned char *)&file_efuse[i]);
+		memcpy(&prog_efuse[index++], &file_efuse[i], EF_DATA_STRUCT_SIZE);
+	}
+	
+	/*Get device mac address and set into prog data*/
+	ret = read_mac_address(info, (unsigned char*)mac);
+	if (ret < 0) {
+		fprintf(stderr,
+			"%s: Get MAC address failed.\n", __func__);
+		return ret;
+	}
+
+	for (i = 0; i < 6; i++)
+		mac_address[i] = mac[i];
+	
+	ret = change_mac_address(prog_efuse, mac_address);
+	if (ret < 0) {
+		printf("[INFO] No need to set MAC address\n");
+		ret = 0;
+	}
+
+	/*Get serial number and set into prog data*/
+	ret = get_dev_desc(info, &ax_dev_desc);
+	if (ret < 0) {
+		fprintf(stderr,
+			"%s: Get device's descriptor failed.\n", __func__);
+		return ret;
+	}
+	
+	ret = change_serial_number(prog_efuse, ax_dev_desc.serial_num);
+	if (ret < 0) {
+		printf("[INFO] No need to set serial number\n");
+		ret = 0;
+	}
+
+	return ret;
+}
+
 static int writeefuse_func(struct ax_command_info *info)
 {
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
 	struct _ef_data_struct *file_efuse = NULL;
 	struct _ef_data_struct *dump_efuse = NULL;
+	struct _ef_data_struct *prog_efuse = NULL; 
 	int i, c, ret;
 	struct __wefuse argument = {0};
 	void *buf = NULL;
 	int oi = -1;
+	bool dir_write_file_flag = true;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1329,54 +1883,61 @@ static int writeefuse_func(struct ax_command_info *info)
 				   (unsigned int *)&argument.MAC[3],
 				   (unsigned int *)&argument.MAC[4],
 				   (unsigned int *)&argument.MAC[5]);
+			dir_write_file_flag = false;
 			if (i != 6)
 				return print_msg("wefuse");
 			break;
 		case 's':
 			argument.serial_num = optarg;
 			DEBUG_PRINT("%s \r\n", argument.serial_num);
+			dir_write_file_flag = false;
 			if (strlen(argument.serial_num) > 18)
 				return print_msg("wefuse");
 			break;
 		case 'w':
 			argument.wol = optarg;
 			DEBUG_PRINT("%s \r\n", argument.wol);
-			break;
-		case 'f':
-			argument.file_path = optarg;
-			DEBUG_PRINT("%s \r\n", argument.file_path);
+			dir_write_file_flag = false;
 			break;
 		case 'l':
 			argument.led0 = optarg;
 			DEBUG_PRINT("%s \r\n", argument.led0);
+			dir_write_file_flag = false;
 			if (__check_led_parameter(argument.led0))
 				return print_msg("wefuse");
 			break;
 		case 'e':
 			argument.led1 = optarg;
 			DEBUG_PRINT("%s \r\n", argument.led1);
+			dir_write_file_flag = false;
 			if (__check_led_parameter(argument.led1))
 				return print_msg("wefuse");			
 			break;
 		case 'p':
-			argument.device = optarg;
+			argument.device = optarg; 
 			DEBUG_PRINT("%s \r\n", argument.device);
-			if (strcasecmp(argument.device , "AX88179B") &&
-			    strcasecmp(argument.device , "AX88179A") &&
-				strcasecmp(argument.device , "AX88772E") &&
-			    strcasecmp(argument.device , "AX88772D"))
+			if (__check_dev_name(info, argument.device))
 				return print_msg("wefuse");
 			break;	
+		case 'f':
+			argument.file_path = optarg;
+			DEBUG_PRINT("%s \r\n", argument.file_path);
+			break;
 		case '?':
 		default:
 			return -FAIL_INVALID_PARAMETER;
 		}
 	}
 
+	/*TODO: fix write whole file feature*/
+	if (dir_write_file_flag == true &&
+		argument.file_path)
+		return print_msg("wefuse");
+
 	if (__check_wefuse_parameter(&argument))
 		return print_msg("wefuse");
 
-	buf = calloc(128, EF_DATA_STRUCT_SIZE);
+	buf = calloc(192, EF_DATA_STRUCT_SIZE);
 	if (!buf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		return -FAIL_ALLCATE_MEM;
@@ -1384,22 +1945,45 @@ static int writeefuse_func(struct ax_command_info *info)
 
 	file_efuse = (struct _ef_data_struct *)buf;
 	dump_efuse = (struct _ef_data_struct *)&file_efuse[64];
+	prog_efuse = (struct _ef_data_struct *)&dump_efuse[64];
+
+	ret = dump_efuse_from_chip(info, dump_efuse);
+	if (ret < 0)
+		goto fail;
 
 	if (argument.file_path) {
 		if (load_efuse_from_file(argument.file_path,
-					 (unsigned char *)file_efuse)) {
+						(unsigned char *)file_efuse)) {
 			PRINT_LOAD_FILE_FAIL;
 			ret = -PRINT_LOAD_FILE_FAIL;
 			goto fail;
+		} else if (dir_write_file_flag) {
+			/*If there no option, set whole file as prog_efuse*/
+			DUMP_EFUSE_DATA(file_efuse);
+#if 0		/*TODO*/
+			ret = get_file_prog_data(info, prog_efuse, file_efuse);
+			if (ret < 0) {
+				fprintf(stderr,
+					"%s: Setting program value failed.\n",
+					__func__);
+				goto fail;
+			}
+#endif
+		} else {
+			/*If there is a file, read last block of the same type*/
+			DUMP_EFUSE_DATA(file_efuse);
+			get_efuse_write_data(prog_efuse, file_efuse, &argument, false);
 		}
 	} else {
-		creat_sample_efuse(file_efuse, &argument);
+		/*If there is no file exist,
+		  read last block of the same type from dump data*/
+		DUMP_EFUSE_DATA(dump_efuse);
+		get_efuse_write_data(prog_efuse, dump_efuse, &argument, true);
 	}
-
-	DUMP_EFUSE_DATA(file_efuse);
+	DUMP_EFUSE_DATA(prog_efuse);
 
 	if (argument.mac_address) {
-		ret = change_mac_address(file_efuse, argument.MAC);
+		ret = change_mac_address(prog_efuse, argument.MAC);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing MAC address failed.\n",
@@ -1409,7 +1993,7 @@ static int writeefuse_func(struct ax_command_info *info)
 	}
 
 	if (argument.serial_num) {
-		ret = change_serial_number(file_efuse, argument.serial_num);
+		ret = change_serial_number(prog_efuse, argument.serial_num);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing serial number failed.\n",
@@ -1421,14 +2005,13 @@ static int writeefuse_func(struct ax_command_info *info)
 	if (argument.wol) {
 
 		int valid = 1;
-
 		if (strlen(argument.wol) != 8)	{
 			printf("FAIL: The value must be 8 digit\n");
 			return -FAIL_INVALID_PARAMETER;
 		}
 
 		int time = 0;
-		for(time = 0; time < 8; time++) {
+		for (time = 0; time < 8; time++) {
 			if (argument.wol[time] != '0' && argument.wol[time] != '1') {
 				printf("FAIL: The value must be 1 or 0\n");
 				return -FAIL_INVALID_PARAMETER;
@@ -1436,7 +2019,7 @@ static int writeefuse_func(struct ax_command_info *info)
 		}
 
 		int count = 0;
-		for(time = 0; time < 8; time++) {
+		for (time = 0; time < 8; time++) {
 			if (argument.wol[time] == '1')
 				count++;
 		}
@@ -1447,23 +2030,23 @@ static int writeefuse_func(struct ax_command_info *info)
 			valid = 0;
 
 		if (argument.wol[0] == '1') {
-			for(time = 1; time < 8; time++) {
+			for (time = 1; time < 8; time++) {
 				if (argument.wol[time] == '1')
 					valid = 0;
 			}
 		} else if (argument.wol[0] == '0' && argument.wol[1] == '0') {
-			for(time = 2; time < 8; time++) {
+			for (time = 2; time < 8; time++) {
 				if (argument.wol[time] == '1')
 					valid = 0;
 			}
 		}
 
-		if(!valid) {
-				printf("FAIL: The value is invalid\n");
-				return -FAIL_INVALID_PARAMETER;
+		if (!valid) {
+			printf("FAIL: The value is invalid\n");
+			return -FAIL_INVALID_PARAMETER;
 		}
 
-		ret = change_wol(file_efuse, argument.wol);
+		ret = change_wol(prog_efuse, argument.wol);
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing Wake on LAN failed.\n",
@@ -1474,27 +2057,19 @@ static int writeefuse_func(struct ax_command_info *info)
 
 	autosuspend_enable(info, 0);
 
-	//DUMP_EFUSE_DATA(file_efuse);
-
-	ret = dump_efuse_from_chip(info, dump_efuse);
-	if (ret < 0)
-		goto fail;
-
-	DUMP_EFUSE_DATA(dump_efuse);
-
 	do {
 		unsigned int program_block;
 		unsigned int program_index;
 
-		ret = merge_efuse(dump_efuse, file_efuse,
+		ret = merge_efuse(dump_efuse, prog_efuse,
 				  &program_block, &program_index);
+		DUMP_EFUSE_DATA(dump_efuse);
 		if (ret < 0)
 			goto fail;
 
-		DUMP_EFUSE_DATA(dump_efuse);
 #ifndef NOT_PROGRAM
 		ret = __program_efuse_block(info, dump_efuse,
-					    program_index, program_block);
+					program_index, program_block);
 		if (ret < 0)
 			goto fail;
 #endif
@@ -1506,14 +2081,19 @@ static int writeefuse_func(struct ax_command_info *info)
 	if (ret < 0)
 		goto fail;
 
-	if (memcmp(file_efuse, dump_efuse, (EF_DATA_STRUCT_SIZE * 32))) {
+	if (memcmp(file_efuse, dump_efuse, 
+				(EF_DATA_STRUCT_SIZE * EFUSE_NUM_BLOCK))) {
 		fprintf(stderr, "%s: Comparing efuse failed.\n", __func__);
 		ret = -FAIL_EFUSE_WRITE;
 		goto fail;
 	}
 #endif
+
 	ret = SUCCESS;
+	
 fail:
+	get_avl_efuse_blk_num(dump_efuse);
+
 	if (buf)
 		free(buf);
 
@@ -1557,12 +2137,13 @@ static int readefuse_func(struct ax_command_info *info)
 		}
 	}
 
-	dump_efuse = (struct _ef_data_struct *)malloc(EF_DATA_STRUCT_SIZE * 32);
+	dump_efuse = (struct _ef_data_struct *)malloc(EF_DATA_STRUCT_SIZE * 
+					EFUSE_NUM_BLOCK);
 	if (!dump_efuse) {
 		PRINT_ALLCATE_MEM_FAIL;
 		return -FAIL_ALLCATE_MEM;
 	}
-	memset(dump_efuse, 0, EF_DATA_STRUCT_SIZE * 32);
+	memset(dump_efuse, 0, EF_DATA_STRUCT_SIZE * EFUSE_NUM_BLOCK);
 
 	autosuspend_enable(info, 0);
 
@@ -1580,7 +2161,7 @@ static int readefuse_func(struct ax_command_info *info)
 
 	DUMP_EFUSE_DATA(dump_efuse);
 
-	for (i = 0; i < 32; i++) {
+	for (i = 0; i < EFUSE_NUM_BLOCK; i++) {
 		unsigned char *buf = (unsigned char *)&dump_efuse[i];
 
 		for (j = 0; j < 5; j++) {
@@ -1595,6 +2176,8 @@ static int readefuse_func(struct ax_command_info *info)
 
 	ret = SUCCESS;
 fail:
+	get_avl_efuse_blk_num(dump_efuse);
+
 	if (dump_efuse)
 		free(dump_efuse);
 	if (pFile)
@@ -1609,6 +2192,9 @@ static int reload_func(struct ax_command_info *info)
 {
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
 	char fw_version[16] = {0};
+	unsigned int dev_cnt = 0, dev_num;
+	int ret;
+	struct ifreq **ifr_list;
 
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
@@ -1625,21 +2211,39 @@ static int reload_func(struct ax_command_info *info)
 		}
 	}
 
-	if (scan_ax_device(ifr, info->inet_sock)) {
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+	
+	ifr_list = malloc(INFE_MAX_NUM * sizeof(struct ifreq*));
+	if (!ifr_list) {
+		PRINT_ALLCATE_MEM_FAIL;
+		ret = -FAIL_ALLCATE_MEM;
+		goto out;
+	}
+	for (dev_num = 0; dev_num < INFE_MAX_NUM; dev_num++)
+		ifr_list[dev_num] = malloc(sizeof(struct ifreq));
+
+	ret = scan_ax_multi_device(ifr, info->inet_sock, ifr_list, &dev_cnt);
+	if (ret < 0) {
 		PRINT_SCAN_DEV_FAIL;
-		return -FAIL_SCAN_DEV;
+		goto out;
 	}
 
-	autosuspend_enable(info, 0);
-
-	sw_reset(info);
-
-	if (scan_ax_device(ifr, info->inet_sock)) {
-		PRINT_SCAN_DEV_FAIL;
-		return -FAIL_SCAN_DEV;
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		info->ifr = ifr_list[dev_num];
+		printf("Reset %s\n", info->ifr->ifr_name);
+		autosuspend_enable(info, 0);
+		sw_reset(info);
 	}
+	ret = SUCCESS;
+out:
+	for (dev_num = 0; dev_num < dev_cnt; dev_num++) {
+		if (ifr_list[dev_num])
+			free(ifr_list[dev_num]);
+	}
+	if (ifr_list)
+		free(ifr_list);
 
-	return SUCCESS;
+	return ret;
 }
 
 static int scan_ax_device(struct ifreq *ifr, int inet_sock)
@@ -1670,7 +2274,7 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
 			if (!(ifr->ifr_flags & IFF_UP))
 				continue;
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
@@ -1700,7 +2304,7 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
 			if (!(ifr->ifr_flags & IFF_UP))
 				continue;
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
@@ -1721,6 +2325,117 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 
 	if (retry >= SCAN_DEV_MAX_RETRY)
 		return -FAIL_SCAN_DEV;
+
+	return SUCCESS;
+}
+
+static int scan_ax_multi_device(struct ifreq *ifr, int inet_sock, 
+	struct ifreq **ifr_list, unsigned int *infe_num) 
+{
+	unsigned int retry;
+	unsigned int infe_cnt = 0;
+	bool rec_infe_flag = true;
+	int i;
+	
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	for (retry = 0; retry < SCAN_DEV_MAX_RETRY; retry++) {
+		unsigned int i;
+		struct _ax_ioctl_command ioctl_cmd;
+#if NET_INTERFACE == INTERFACE_SCAN
+		struct ifaddrs *addrs, *tmp;
+		unsigned char	dev_exist;
+
+		getifaddrs(&addrs);
+		tmp = addrs;
+		dev_exist = 0;
+
+		while (tmp) {
+			memset(&ioctl_cmd, 0,
+			       sizeof(struct _ax_ioctl_command));
+			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
+			sprintf(ifr->ifr_name, "%s", tmp->ifa_name);
+			tmp = tmp->ifa_next;
+			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
+
+			if (!(ifr->ifr_flags & IFF_UP))
+				continue;
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+			ifr->ifr_data = (caddr_t)&ioctl_cmd;
+			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
+				continue;
+
+			if (strncmp(ioctl_cmd.sig,
+				    AX88179A_DRV_NAME,
+				    strlen(AX88179A_DRV_NAME)) == 0) {
+				/*Check if the device already exists*/
+				for (i = 0; i < infe_cnt; i++) {
+					if (strcmp(ifr_list[i]->ifr_name, ifr->ifr_name) == 0) {
+						rec_infe_flag = false;
+						break;
+					}
+				}
+				if (rec_infe_flag == true) {
+					dev_exist = 1;
+					memcpy(ifr_list[infe_cnt], ifr, sizeof(struct ifreq));
+					infe_cnt++;
+				} else {
+					rec_infe_flag = true;
+				}
+			}
+		}
+		freeifaddrs(addrs);
+
+		if (dev_exist)
+			break;
+#else
+		for (i = 0; i < 255; i++) {
+
+			memset(&ioctl_cmd, 0,
+			       sizeof(struct _ax_ioctl_command));
+			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
+
+			sprintf(ifr->ifr_name, "eth%u", i);
+
+			ioctl(inet_sock, SIOCGIFFLAGS, ifr);
+			if (!(ifr->ifr_flags & IFF_UP))
+				continue;
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
+			ifr->ifr_data = (caddr_t)&ioctl_cmd;
+
+			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
+				continue;
+
+			if (strncmp(ioctl_cmd.sig,
+				    AX88179A_DRV_NAME,
+				    strlen(AX88179A_DRV_NAME)) == 0) {
+
+				for (i = 0; i < infe_cnt; i++) {
+					if (strcmp(ifr_list[i]->ifr_name, ifr->ifr_name) == 0) {
+						rec_infr_flag = false;
+						break;
+					}
+				}
+				if (rec_infr_flag == true) {
+					memcpy(ifr_list[infe_cnt], ifr, sizeof(struct ifreq));
+					infe_cnt++;
+				} else {
+					rec_infr_flag = true;
+				}
+			}
+		}
+
+		if (i < 255)
+			break;
+#endif
+
+		usleep(500000);
+	}
+
+	if (retry >= SCAN_DEV_MAX_RETRY)
+		return -FAIL_SCAN_DEV;
+
+	*infe_num = infe_cnt;
 
 	return SUCCESS;
 }

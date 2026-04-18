@@ -30,20 +30,32 @@
 fprintf(stderr, "%s: ioctl failed. (err: %d)\n", __func__, ret)
 
 #define AX88179A_IOCTL_VERSION \
-"AX88179A/AX88772D Linux IEEE Test Tool v1.0.0"
+"AX88279/179B/179A/772E/772D Linux IEEE Test Tool v1.0.0"
 
 const char help_str1[] =
-"./ax88179a_772d_ieee help [command]\n"
+"./ax88279_179ab_772e_ieee help [command]\n"
 "    -- command description\n";
 const char help_str2[] =
 "        [command] - Display usage of specified command\n";
 
 const char ieeetest_str1[] =
-"./ax88179a_772d_ieee ieeetest [speed] [option]\n"
-"    -- AX88179A_772D IEEE Test Tool\n";
+"./ax88279_179ab_772e_ieee ieeetest [speed] [option]\n"
+"    -- AX88279_179AB_772E IEEE Test Tool\n";
 const char ieeetest_str2[] =
-"        [speed]    - 1000: 1000Mbps,  100: 100Mbps,  10: 10Mbps\n"
-"        [option]   - For 1000Mbps\n"
+"        [speed]    -2500: 2500Mps - 1000: 1000Mbps,  100: 100Mbps,  10: 10Mbps\n"
+"        [option]   - For 2500Mbps\n"
+"			M1: Mode 1\n"
+"			M2: Mode 2\n"
+"			M3: Mode 3\n"
+"			M4: Mode 4\n"
+"			\t P1: Pair 1\n"
+"			\t P2: Pair 2\n"
+"			\t P3: Pair 3\n"
+"			\t P4: Pair 4\n"
+"			\t P5: Pair 5\n"
+"			M5: Mode 5\n"
+"			M6: Mode 6\n"
+"			- For 1000Mbps\n"
 "			M1: Mode 1\n"
 "			M2: Mode 2\n"
 "			M3: Mode 3\n"
@@ -107,8 +119,8 @@ static unsigned long STR_TO_U32(const char *cp, char **endp, unsigned int base)
 	if (!base)
 		base = 10;
 
-	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp-'0' : (islower(*cp)
-	    ? toupper(*cp) : *cp)-'A'+10) < base) {
+	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp - '0' : (islower(*cp)
+	    ? toupper(*cp) : *cp) - 'A' + 10) < base) {
 		result = result*base + value;
 		cp++;
 	}
@@ -144,7 +156,7 @@ static int ieeetest_func(struct ax_command_info *info)
 	struct _ax_ioctl_command ioctl_cmd;
 	int ret;
 
-	if (info->argc != 4) {
+	if (info->argc < 4 || info->argc > 5) {
 		int i;
 
 		for (i = 0; ax88179a_cmd_list[i].cmd != NULL; i++) {
@@ -157,7 +169,55 @@ static int ieeetest_func(struct ax_command_info *info)
 		}
 	}
 
-	if (!strcmp(info->argv[2], "1000") && strlen(info->argv[2]) == 4) {
+	ioctl_cmd.ieee.subtype = 0;
+
+	if (!strcmp(info->argv[2], "2500") && strlen(info->argv[2]) == 4) {
+		ioctl_cmd.ieee.speed = 2500;
+		if (!strcmp(info->argv[3], "M1")) {
+			printf("Test item: 2500M M1\n");
+			ioctl_cmd.ieee.type = IEEE_2500M1;
+		} else if (!strcmp(info->argv[3], "M2")) {
+			printf("Test item: 2500M M2\n");
+			ioctl_cmd.ieee.type = IEEE_2500M2;
+		} else if (!strcmp(info->argv[3], "M3")) {
+			printf("Test item: 2500M M3\n");
+			ioctl_cmd.ieee.type = IEEE_2500M3;
+		} else if (!strcmp(info->argv[3], "M4")) {
+			ioctl_cmd.ieee.type = IEEE_2500M4;
+			if (info->argc != 5) {
+				printf("Invalid option\n");
+				return -FAIL_IVALID_VALUE;
+			}
+			if (!strcmp(info->argv[4], "P1")) {
+				ioctl_cmd.ieee.subtype = IEEE_2500M4_P1;
+				printf("Test item: 2500M M4 P1\n");
+			} else if (!strcmp(info->argv[4], "P2")) {
+				ioctl_cmd.ieee.subtype = IEEE_2500M4_P2;
+				printf("Test item: 2500M M4 P2\n");
+			} else if (!strcmp(info->argv[4], "P3")) {
+				ioctl_cmd.ieee.subtype = IEEE_2500M4_P3;
+				printf("Test item: 2500M M4 P3\n");
+			} else if (!strcmp(info->argv[4], "P4")) {
+				ioctl_cmd.ieee.subtype = IEEE_2500M4_P4;
+				printf("Test item: 2500M M4 P4\n");
+			} else if (!strcmp(info->argv[4], "P5")) {
+				ioctl_cmd.ieee.subtype = IEEE_2500M4_P5;
+				printf("Test item: 2500M M4 P5\n");
+			} else {
+				printf("Invalid option\n");
+				return -FAIL_IVALID_VALUE;
+			}
+		} else if (!strcmp(info->argv[3], "M5")) {
+			printf("Test item: 2500M M5\n");
+			ioctl_cmd.ieee.type = IEEE_2500M5;
+		} else if (!strcmp(info->argv[3], "M6")) {
+			printf("Test item: 2500M M6\n");
+			ioctl_cmd.ieee.type = IEEE_2500M6;
+		} else {
+			printf("Invalid option\n");
+			return -FAIL_IVALID_VALUE;
+		}
+	} else if (!strcmp(info->argv[2], "1000") && strlen(info->argv[2]) == 4) {
 		ioctl_cmd.ieee.speed = 1000;
 		if (!strcmp(info->argv[3], "M1")) {
 			printf("Test item: 1000M M1\n");
@@ -220,6 +280,7 @@ static int ieeetest_func(struct ax_command_info *info)
 	ioctl_cmd.ieee.stop = 0;
 
 	ioctl_cmd.ioctl_cmd = AX88179A_IEEE_TEST;
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	ret = ioctl(info->inet_sock, AX_PRIVATE, ifr);
 	if (ret < 0) {
@@ -264,7 +325,7 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
 
 			sprintf(ifr->ifr_name, "%s", tmp->ifa_name);
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 			tmp = tmp->ifa_next;
 
@@ -275,6 +336,12 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			if (strncmp(ioctl_cmd.sig,
 				    AX88179A_DRV_NAME,
 				    strlen(AX88179A_DRV_NAME)) == 0) {
+				dev_exist = 1;
+				break;
+			}
+			if (strncmp(ioctl_cmd.sig, 
+					AX88279A_DRV_NAME,
+			    	strlen(AX88279A_DRV_NAME)) == 0) {
 				dev_exist = 1;
 				break;
 			}
@@ -292,7 +359,7 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 			ioctl_cmd.ioctl_cmd = AX_SIGNATURE;
 
 			sprintf(ifr->ifr_name, "eth%u", i);
-
+			ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 			ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 			if (ioctl(inet_sock, AX_PRIVATE, ifr) < 0)
@@ -302,7 +369,10 @@ static int scan_ax_device(struct ifreq *ifr, int inet_sock)
 				    AX88179A_DRV_NAME,
 				    strlen(AX88179A_DRV_NAME)) == 0)
 				break;
-
+			if (strncmp(ioctl_cmd.sig,
+				    AX88279A_DRV_NAME,
+				    strlen(AX88279A_DRV_NAME)) == 0)
+				break;
 		}
 
 		if (i < 255)
@@ -334,7 +404,7 @@ int main(int argc, char **argv)
 	inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
 
 	if (scan_ax_device(&ifr, inet_sock)) {
-		printf("No %s found\n", AX88179A_SIGNATURE);
+		printf("No ASIX device found\n");
 		return FAIL_SCAN_DEV;
 	}
 
@@ -355,7 +425,6 @@ int main(int argc, char **argv)
 	}
 
 	if (ax88179a_cmd_list[i].cmd == NULL) {
-		printf("%u\n", i);
 		show_usage();
 		return SUCCESS;
 	}

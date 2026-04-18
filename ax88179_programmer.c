@@ -123,9 +123,9 @@ static unsigned long STR_TO_U32(const char *cp, char **endp, unsigned int base)
 	if (!base)
 		base = 10;
 
-	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp-'0' : (islower(*cp)
-	    ? toupper(*cp) : *cp)-'A'+10) < base) {
-		result = result*base + value;
+	while (isxdigit(*cp) && (value = isdigit(*cp) ? *cp - '0' : (islower(*cp)
+	    ? toupper(*cp) : *cp) - 'A' + 10) < base) {
+		result = result * base + value;
 		cp++;
 	}
 	if (endp)
@@ -242,7 +242,7 @@ static int readeeprom_func(struct ax_command_info *info)
 	ioctl_cmd.buf = buf;
 	ioctl_cmd.type = type;
 	ioctl_cmd.delay = 0;
-
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
@@ -341,6 +341,7 @@ static int writeeeprom_func(struct ax_command_info *info)
 
 	if (type) {
 		ioctl_cmd.type = 2;
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr->ifr_data = (caddr_t)&ioctl_cmd;
 		if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
 			free(buf);
@@ -356,6 +357,7 @@ static int writeeeprom_func(struct ax_command_info *info)
 
 	ioctl_cmd.type = type;
 io:
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 	if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
@@ -455,7 +457,7 @@ static int chgmac_func(struct ax_command_info *info)
 		ioctl_cmd.buf = buf;
 		ioctl_cmd.delay = 0;
 		ioctl_cmd.type = type;
-
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr->ifr_data = (caddr_t)&ioctl_cmd;
 
 		if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
@@ -492,6 +494,7 @@ static int chgmac_func(struct ax_command_info *info)
 
 	if (type) {
 		ioctl_cmd.type = 2;
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr->ifr_data = (caddr_t)&ioctl_cmd;
 		if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
 			free(buf);
@@ -502,6 +505,7 @@ static int chgmac_func(struct ax_command_info *info)
 		}
 	}
 io:
+	ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 	ifr->ifr_data = (caddr_t)&ioctl_cmd;
 	if (ioctl(info->inet_sock, AX_PRIVATE, ifr) < 0) {
 		perror("ioctl");
@@ -563,7 +567,8 @@ int main(int argc, char **argv)
 		ioctl(inet_sock, SIOCGIFFLAGS, &ifr);
 		if (!(ifr.ifr_flags & IFF_UP))
 			continue;
-
+		
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr.ifr_data = (caddr_t)&ioctl_cmd;
 
 		if (ioctl(inet_sock, AX_PRIVATE, &ifr) < 0)
@@ -594,6 +599,7 @@ int main(int argc, char **argv)
 		if (!(ifr.ifr_flags & IFF_UP))
 			continue;
 
+		ioctl_cmd.ax_cmd_sig = AX_PRIV_SIGNATURE;
 		ifr.ifr_data = (caddr_t)&ioctl_cmd;
 
 		if (ioctl(inet_sock, AX_PRIVATE, &ifr) < 0)

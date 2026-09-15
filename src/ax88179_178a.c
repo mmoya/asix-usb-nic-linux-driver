@@ -107,7 +107,7 @@ const struct ethtool_ops ax88179_ethtool_ops = {
 
 int ax88179_signature(struct ax_device *axdev, struct _ax_ioctl_command *info)
 {
-	strncpy(info->sig, AX88179_SIGNATURE, strlen(AX88179_SIGNATURE));
+	strscpy(info->sig, AX88179_SIGNATURE, sizeof(info->sig));
 	return 0;
 }
 

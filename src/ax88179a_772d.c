@@ -628,7 +628,7 @@ int ax88179a_read_version(struct ax_device *axdev,
 	DEBUG_PRINTK("%s - Start", __func__);
 
 	ret = ax88179a_get_fw_version(axdev);
-	
+
 	if (axdev->chip_version >= AX_VERSION_AX88279) {
 		ax88279_get_ephy_fw_version(axdev);
 
@@ -639,11 +639,11 @@ int ax88179a_read_version(struct ax_device *axdev,
 
 		memcpy(&info->version.version, temp, 32);
 	} else {
-		sprintf(temp, "v%d.%d.%d.%d",
+	sprintf(temp, "v%d.%d.%d.%d",
 		axdev->fw_version[0], axdev->fw_version[1],
 		axdev->fw_version[2], axdev->fw_version[3]);
-		
-		memcpy(&info->version.version, temp, 16);
+
+	memcpy(&info->version.version, temp, 16);
 	}
 
 	return ret;
@@ -837,6 +837,7 @@ int ax88179a_erase_flash(struct ax_device *axdev,
 			 struct _ax_ioctl_command *info)
 {
 	int ret = 0;
+	int reg;
 
 	DEBUG_PRINTK("%s - Start", __func__);
 
@@ -846,11 +847,15 @@ int ax88179a_erase_flash(struct ax_device *axdev,
 		info->flash.status = -ERR_FALSH_WRITE_EN;
 		return ret;
 	}
-
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		reg = AX_FLASH_TIMEOUT;
+		ret = ax_write_cmd(axdev, AX88179A_FLASH_ACCESS_TIMER, 
+							1, 0, 4, &reg);
+	}
 	ret = usb_control_msg(axdev->udev, usb_sndctrlpipe(axdev->udev, 0),
 			      AX88179A_FLASH_ERASE_ALL,
 			      USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			      0, 0, NULL, 0, 600000);
+			      0, 0, NULL, 0, AX_FLASH_TIMEOUT);
 
 	if (ret < 0) {
 		netdev_err(axdev->netdev, "Flash erase all failed");
@@ -1511,10 +1516,23 @@ static int ax88179a_bind(struct ax_device *axdev)
 		axdev->rx_buf = axdev->driver_info->buf_rx_size;
 		axdev->tx_buf = AX88179_BUF_TX_SIZE;
 	}
+#ifdef ENABLE_LSO
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		axdev->tx_casecade_size = axdev->tx_buf - (1 * KB_SIZE);
+		axdev->gso_max_size = TX_CASECADES_SIZE;
+	} else {
+		axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
+	                          	  (axdev->tx_buf - (1 * KB_SIZE)) 	   : 
+							  	  (TX_CASECADES_SIZE);
+		axdev->gso_max_size = axdev->tx_casecade_size;
+	}
+#else
 	axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
-	                          (axdev->tx_buf - (1 * KB_SIZE)) 	  : 
+	                          (axdev->tx_buf - (1 * KB_SIZE)) 	   : 
 							  (TX_CASECADES_SIZE);
 	axdev->gso_max_size = axdev->tx_casecade_size;
+#endif
+
 	axdev->mii.supports_gmii = true;
 	axdev->mii.dev = netdev;
 	axdev->mii.mdio_read = ax_mdio_read;
@@ -1717,13 +1735,13 @@ static int ax88179a_hw_init(struct ax_device *axdev, int no_pm)
 		return ret;
 
 	reg8 = 0x04;
-	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
 	reg8 = 0x10;
-	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
@@ -1909,14 +1927,14 @@ static int ax88279a_hw_init(struct ax_device *axdev, int no_pm)
 	if (ret < 0)
 		return ret;
 
-	reg8 = 0x04;
-	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
+	reg8 = ax_get_water_level_high_val(axdev->netdev->mtu);
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
 
-	reg8 = 0x10;
-	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+	reg8 = 0x18;
+	ret = fnw(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
 			   1, 1, &reg8);
 	if (ret < 0)
 		return ret;
@@ -2169,7 +2187,7 @@ static int ax88179a_link_setting(struct ax_device *axdev)
 
 	reg8[0] = 0x10;
 	reg8[1] = 0x04;
-	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
 				2, 2, reg8);
 	if (ret < 0)
 		return ret;
@@ -2450,7 +2468,7 @@ static int ax88279_link_setting(struct ax_device *axdev)
 	reg8[0] = 0x10;
 	reg8[1] = 0x04;
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
-				AX_PAUSE_WATERLVL_HIGH, 2, 2, reg8);
+				AX_PAUSE_WATERLVL_LOW, 2, 2, reg8);
 	if (ret < 0)
 		return ret;
 
@@ -2690,10 +2708,10 @@ static int ax88279a_link_setting(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
-	reg8[0] = 0x10;
-	reg8[1] = 0x04;
+	reg8[0] = 0x18;
+	reg8[1] = ax_get_water_level_high_val(axdev->netdev->mtu);
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
-				AX_PAUSE_WATERLVL_HIGH, 2, 2, reg8);
+				AX_PAUSE_WATERLVL_LOW, 2, 2, reg8);
 	if (ret < 0)
 		return ret;
 
@@ -2718,9 +2736,7 @@ static int ax88279a_link_setting(struct ax_device *axdev)
 		return ret;
 	switch (link_info->eth_speed) {
 	case ETHER_LINK_2500:
-#ifdef ENABLE_PTP_DELAY
-		axdev->delay = 2282;
-#endif
+		axdev->ptp_delay = AX88279A_PTP_DELAY_2500M;
 		reg8[0] = 0x00;
 		reg8[1] = 0xF8;
 		reg8[2] = 0x07;
@@ -2762,9 +2778,7 @@ static int ax88279a_link_setting(struct ax_device *axdev)
 		medium_mode |= AX_MEDIUM_GIGAMODE;
 		break;
 	case ETHER_LINK_1000:
-#ifdef ENABLE_PTP_DELAY
-		axdev->delay = 250;
-#endif
+		axdev->ptp_delay = AX88279A_PTP_DELAY_1000M;
 		reg8[0] = 0x48;
 		reg8[1] = 0xF1;
 		reg8[2] = 0x3E;
@@ -2807,9 +2821,7 @@ static int ax88279a_link_setting(struct ax_device *axdev)
 		medium_mode |= AX_MEDIUM_GIGAMODE;
 		break;
 	case ETHER_LINK_100:
-#ifdef ENABLE_PTP_DELAY
-		axdev->delay = 288;
-#endif
+		axdev->ptp_delay = AX88279A_PTP_DELAY_100M;
 		
 		reg32 = 0x1e01f807;
 		ret = ax_write_cmd(axdev, AX_PBUS_A32, 0x1010, 
@@ -2899,9 +2911,7 @@ static int ax88279a_link_setting(struct ax_device *axdev)
 			return ret;
 		break;
 	case ETHER_LINK_10:
-#ifdef ENABLE_PTP_DELAY
-		axdev->delay = 3948;
-#endif
+		axdev->ptp_delay = AX88279A_PTP_DELAY_10M;
 		reg8[0] = 0x90;
 		reg8[1] = 0xE2;
 		reg8[2] = 0x7D;
@@ -3151,7 +3161,7 @@ static int ax88279_link_reset(struct ax_device *axdev)
 		return ret;
 
 #ifdef ENABLE_QUEUE_PRIORITY
-	ret = axdev->driver_info->queue_priority(axdev); /*TOCHECK*/
+	ret = axdev->driver_info->queue_priority(axdev);
 	if (ret < 0)
 		return ret;
 #endif
@@ -3439,7 +3449,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 			      int *work_done, int budget)
 {
 #ifndef ENABLE_RX_TASKLET
-	struct napi_struct *napi = &axdev->napi;
+	struct napi_struct *rx_napi = &axdev->rx_napi;
 #endif
 	struct net_device *netdev = axdev->netdev;
 	struct net_device_stats *stats = ax_get_stats(netdev);
@@ -3493,7 +3503,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 		skb = netdev_alloc_skb(netdev, pkt_len);
 #else
-		skb = napi_alloc_skb(napi, pkt_len);
+		skb = napi_alloc_skb(rx_napi, pkt_len);
 #endif
 		if (!skb) {
 			stats->rx_dropped++;
@@ -3516,11 +3526,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #endif
 #ifdef ENABLE_PTP_FUNC
 		if (pkt_hdr->PTP_ind) {
-#ifdef ENABLE_PTP_DELAY
-			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, axdev->delay);
-#else
-			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr);
-#endif
+			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, 0);
 			pkt_hdr += 2;
 		}
 #endif
@@ -3529,7 +3535,7 @@ static void ax88179a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 			netif_receive_skb(skb);
 #else
-			napi_gro_receive(napi, skb);
+			napi_gro_receive(rx_napi, skb);
 #endif
 
 			*work_done += 1;
@@ -3548,7 +3554,7 @@ static void ax88279a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 			      int *work_done, int budget)
 {
 #ifndef ENABLE_RX_TASKLET
-	struct napi_struct *napi = &axdev->napi;
+	struct napi_struct *rx_napi = &axdev->rx_napi;
 #endif
 	struct net_device *netdev = axdev->netdev;
 	struct net_device_stats *stats = ax_get_stats(netdev);
@@ -3640,7 +3646,7 @@ static void ax88279a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 		skb = netdev_alloc_skb(netdev, pkt_len);
 #else
-		skb = napi_alloc_skb(napi, pkt_len);
+		skb = napi_alloc_skb(rx_napi, pkt_len);
 #endif
 		if (!skb) {
 			stats->rx_dropped++;
@@ -3673,11 +3679,7 @@ static void ax88279a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #endif
 #ifdef ENABLE_PTP_FUNC
 		if (pkt_hdr->PTP_ind) {
-#ifdef ENABLE_PTP_DELAY
-			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, axdev->delay);
-#else
-			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr);
-#endif
+			ax_rx_get_timestamp(skb, (u64 *)pkt_hdr, axdev->ptp_delay);
 			pkt_hdr += 2;
 		}
 #endif
@@ -3686,7 +3688,7 @@ static void ax88279a_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 			netif_receive_skb(skb);
 #else
-			napi_gro_receive(napi, skb);
+			napi_gro_receive(rx_napi, skb);
 #endif
 			*work_done += 1;
 			stats->rx_packets++;
@@ -3841,7 +3843,7 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 	struct net_device_stats *stats = &axdev->netdev->stats;
 	int remain, ret, endpoint;
 	u8 *tx_data;
-#ifdef ENABLE_NORMAL_PKT_PTP 
+#ifdef ENABLE_PTP_NORMAL_PKT 
 	static u8 sequence_id = 0;
 #endif
 	endpoint = desc->q_index * 2 + 3;
@@ -3877,7 +3879,7 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		memset(tx_hdr, 0, AX88179A_TX_HEADER_SIZE);
 		tx_hdr->length = (skb->len & 0x1FFFFF);
 		tx_hdr->checksum = AX88179A_TX_HERDER_CHKSUM(tx_hdr->length);
-#ifndef ENABLE_NORMAL_PKT_PTP 
+#ifndef ENABLE_PTP_NORMAL_PKT 
 		tx_hdr->max_seg_size = skb_shinfo(skb)->gso_size;
 #endif
 
@@ -3910,7 +3912,7 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 			skb_queue_tail(&axdev->tx_timestamp, skb);
 			set_bit(AX_TX_TIMESTAMPS, &desc->flags);
 		} else {
-#ifdef ENABLE_NORMAL_PKT_PTP 
+#ifdef ENABLE_PTP_NORMAL_PKT 
 			tx_hdr->normal_pkt_enable = 1;
 			tx_hdr->normal_pkt_index = sequence_id;
 
@@ -3925,7 +3927,7 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		dev_kfree_skb_any(skb);
 #endif
 
-#ifndef ENABLE_NORMAL_PKT_PTP 
+#ifndef ENABLE_PTP_NORMAL_PKT 
 		if (tx_hdr->max_seg_size)
 			break;
 #endif

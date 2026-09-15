@@ -34,6 +34,7 @@
 #include <linux/crc32.h>
 #include <linux/time.h>
 #include <linux/random.h>
+#include "ax_config.h"
 #include "ax_ioctl.h"
 
 #define napi_alloc_skb(napi, length) 	netdev_alloc_skb_ip_align(netdev, length)
@@ -76,20 +77,20 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 #define AX_DRIVER_STRING_279A \
 				"ASIX AX88279A USB Ethernet Controller"
 
-#define DRIVER_VERSION		"4.0.0"
+#define DRIVER_VERSION		"4.1.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC			"ASIX USB Ethernet Controller"
 #define MODULENAME			"ax_usb_nic"
 
 #define PRINT_VERSION_179(axdev, str) 		\
-	dev_info(&axdev->intf->dev, 			\
-		"%s %s (%d.%d.%d.%d_%d.%d)", 		\
-		str, DRIVER_VERSION, 				\
-		axdev->fw_version[0], 				\
-		axdev->fw_version[1],				\
-		axdev->fw_version[2], 				\
-		axdev->fw_version[3], 				\
-		axdev->chip_version, 				\
+	dev_info(&axdev->intf->dev, 		\
+		"%s %s (%d.%d.%d.%d_%d.%d)", 	\
+		str, DRIVER_VERSION, 			\
+		axdev->fw_version[0], 			\
+		axdev->fw_version[1],			\
+		axdev->fw_version[2], 			\
+		axdev->fw_version[3], 			\
+		axdev->chip_version, 			\
 		axdev->sub_version)
 
 #define PRINT_VERSION_279(axdev, str) 		\
@@ -264,8 +265,8 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 #else
 	#define AX_TXCOE_DEF_CSUM			(AX_TXCOE_TCP	| AX_TXCOE_UDP)
 #endif
-#define AX_PAUSE_WATERLVL_HIGH			0x54
-#define AX_PAUSE_WATERLVL_LOW			0x55
+#define AX_PAUSE_WATERLVL_LOW			0x54
+#define AX_PAUSE_WATERLVL_HIGH			0x55
 #define AX_RX_FREE_BUF_LOW				0x57
 
 #define GMII_PHY_CONTROL				0x00
@@ -387,7 +388,8 @@ enum ax_driver_flags {
 	AX_ENABLE,
 	AX_LINK_CHG,
 	AX_SELECTIVE_SUSPEND,
-	AX_SCHEDULE_NAPI,
+	AX_SCHEDULE_NAPI_TX,
+	AX_SCHEDULE_NAPI_RX,
 	AX_EN_RX,
 	AX_SCHEDULE_TASKLET_TX,
 	AX_SCHEDULE_TASKLET_RX,
@@ -543,9 +545,6 @@ struct ax_device {
 #ifdef ENABLE_RX_PREEMPT
 	struct pkt_buff *pb;
 #endif
-#ifndef ENABLE_RX_TASKLET
-	struct napi_struct 			napi;
-#endif
 	struct urb 					*intr_urb;
 	struct tx_desc 				tx_list[AX_TX_MAX_QUEUE_SIZE][32];
 	struct rx_desc 				rx_list[32];
@@ -558,15 +557,17 @@ struct ax_device {
 	struct mutex 				control;
 #ifdef ENABLE_TX_TASKLET
 	struct tasklet_struct 		tx_tl[AX_TX_MAX_QUEUE_SIZE];
+#else
+	struct napi_struct 			tx_napi[AX_TX_MAX_QUEUE_SIZE];
 #endif
 #ifdef ENABLE_RX_TASKLET
 	struct tasklet_struct 		rx_tl;
+#else
+	struct napi_struct 			rx_napi;
 #endif
 
 	int 						intr_interval;
-#ifdef ENABLE_PTP_DELAY
-	u64 						delay;
-#endif
+	u64 						ptp_delay;
 	u8							tx_queue_num;
 	u32 						saved_wolopts;
 	u32 						msg_enable;
@@ -734,6 +735,7 @@ static inline struct net_device_stats *ax_get_stats(struct net_device *netdev)
 }
 
 int ax_get_mac_pass(struct ax_device *axdev, u8 *mac);
+u8 ax_get_water_level_high_val(unsigned int mtu);
 int ax_check_ether_addr(struct ax_device *axdev, struct sockaddr *p);
 void ax_set_tx_qlen(struct ax_device *dev);
 void ax_write_bulk_callback(struct urb *urb);

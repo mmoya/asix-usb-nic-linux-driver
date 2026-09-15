@@ -17,6 +17,8 @@
 #ifndef __ASIX_IOCTL_H
 #define __ASIX_IOCTL_H
 
+#include "ax_config.h"
+
 #ifdef ENABLE_IOCTL_DEBUG
 #define DEBUG_PRINTK(fmt, args...) 	printk(fmt, ## args)
 #else

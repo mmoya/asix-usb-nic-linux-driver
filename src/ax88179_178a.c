@@ -845,11 +845,11 @@ static int ax88179_hw_init(struct ax_device *axdev, int no_pm)
 	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL, 5, 5, buf);
 
 	reg8 = 0x34;
-	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
+	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
 			  1, 1, &reg8);
 
 	reg8 = 0x52;
-	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_LOW,
 			  1, 1, &reg8);
 
 	ax_write_cmd(axdev, 0x91, 0, 0, 0, NULL);
@@ -1202,7 +1202,7 @@ static void ax88179_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 		skb = netdev_alloc_skb(netdev, pkt_len);
 #else
-		skb = napi_alloc_skb(&axdev->napi, pkt_len);
+		skb = napi_alloc_skb(&axdev->rx_napi, pkt_len);
 #endif
 		if (!skb) {
 			stats->rx_dropped++;
@@ -1220,7 +1220,7 @@ static void ax88179_rx_fixup(struct ax_device *axdev, struct rx_desc *desc,
 #ifdef ENABLE_RX_TASKLET
 			netif_receive_skb(skb);
 #else
-			napi_gro_receive(&axdev->napi, skb);
+			napi_gro_receive(&axdev->rx_napi, skb);
 #endif
 			*work_done += 1;
 			stats->rx_packets++;

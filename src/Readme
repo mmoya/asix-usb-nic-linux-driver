@@ -83,10 +83,7 @@ Programmer & IEEE TEST
 ASIX USB Ethernet Linux Command Line Programming Tool
 
 [Note]: Enable DEBUG message
-* Modify ENABLE_IOCTL_DEBUG to y in Makefile.
-	ENABLE_IOCTL_DEBUG = n
-	->
-	ENABLE_IOCTL_DEBUG = y
+* Set ENABLE_IOCTL_DEBUG to 1 in ax_config.h.
 
 1. Extract the compressed driver source file to your temporary directory by the
 following command:
@@ -119,12 +116,8 @@ Adjust the contents of #define NET_INTERFACE to select the method you want.
 ================
 Enable PTP(Precision Time Protocol)
 ================
-1. If you want to enable the PTP function, please modify ENABLE_PTP_FUNC to 'y' in the makefile, 
+1. If you want to enable the PTP function, please set ENABLE_PTP_FUNC to 1 in the ax_config, 
 	and then recompile it.
-	
-	ENABLE_PTP_FUNC = n
-	->
-	ENABLE_PTP_FUNC = y
 
 === AX88179/178A EEPROM/eFuse Programmer
 1. If you want to read out values of the EEPROM/EFUSE to a file, go to the 
@@ -172,9 +165,11 @@ directory and execute the following command:
 
 6. If you want to write the eFuse, go to the driver directory and execute 
 the following command:
-	$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -w [wol]
-	-f [File] --led0 [value] --led1 [value] -p [device]
+	$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -M [MN] -n [PS] 
+	-s [SN] -w [wol] -f [File] --led0 [value] --led1 [value] -p [device]
 		-m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)
+		-M [MN]    	- Manufacture Name (Characters must be less than 19 bytes)
+		-P [PS]    	- Product String (Characters must be less than 19 bytes)
 		-s [SN]     - Serial number
 		-w [wol]    - wake on LAN (XXXXXXXX) X:digit\n"
 		--led0 [value]   - value: control_blink (XXXX_XXXX)
@@ -187,7 +182,7 @@ the following command:
 		-s 00000000000001 -f eFuse_Dump.txt
 
 		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:81:79:01 
-		-s 0000000000179A --led0 8007_0000 --led1 8000_003F -p AX88179A
+		-s 0000000000179A --led0 8007_0000 --led1 8000_003F -n ax88179b -M asix -p AX88179A
 
 		$sudo ./ax88179b_179a_772e_772d_programmer wefuse -m 00:0E:C6:87:72:D1
 		-s 0000000000772D -p AX88772D

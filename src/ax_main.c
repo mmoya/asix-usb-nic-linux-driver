@@ -816,7 +816,7 @@ static void ax_read_bulk_callback(struct urb *urb)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_schedule(&axdev->rx_tl);
 #else
-		napi_schedule(&axdev->napi);
+		napi_schedule(&axdev->rx_napi);
 #endif
 		return;
 	case -ESHUTDOWN:
@@ -858,8 +858,9 @@ void ax_write_bulk_callback(struct urb *urb)
 		return;
 
 #ifdef ENABLE_PTP_FUNC
-	if (test_and_clear_bit(AX_TX_TIMESTAMPS, &desc->flags))
-		ax_ptp_ts_read_cmd_async(axdev);
+	if (test_and_clear_bit(AX_TX_TIMESTAMPS, &desc->flags)) {
+		ax88179a_ptp_ts_read_cmd_async(axdev);
+	}
 #endif
 	netdev = axdev->netdev;
 	stats = ax_get_stats(netdev);
@@ -896,7 +897,7 @@ void ax_write_bulk_callback(struct urb *urb)
 #ifdef ENABLE_TX_TASKLET
 		tasklet_schedule(&axdev->tx_tl[desc->q_index]);
 #else
-		napi_schedule(&axdev->napi);
+		napi_schedule(&axdev->tx_napi[desc->q_index]);
 #endif
 }
 
@@ -1245,8 +1246,12 @@ static struct tx_desc *ax_get_tx_desc(struct ax_device *dev, int index)
 
 	return desc;
 }
-
+#ifdef ENABLE_TX_TASKLET
 static void ax_tx_bottom(struct ax_device *axdev, int index)
+#else
+static void ax_tx_bottom(struct ax_device *axdev, int index, 
+							int budget, int *work_done)
+#endif
 {
 	const struct driver_info *info = axdev->driver_info;
 	int ret;
@@ -1289,12 +1294,21 @@ static void ax_tx_bottom(struct ax_device *axdev, int index)
 				spin_unlock_irqrestore(&axdev->tx_lock, flags);
 			}
 		}
+		
+#ifndef ENABLE_TX_TASKLET
+		if (!ret) {
+			*work_done += desc->skb_num;
+			if (*work_done >= budget)
+				break;
+		}
+#endif
 	} while ((ret == 0 && 
 		!test_bit(AX_UNPLUG, &axdev->flags) &&
 	    test_bit(AX_ENABLE, &axdev->flags)) || 
 	    netif_carrier_ok(axdev->netdev));
 }
 #ifdef ENABLE_TX_TASKLET
+/*ax_bottom_half only for tasklet single queue*/
 #if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
 static void ax_bottom_half(unsigned long t)
 {
@@ -1304,23 +1318,15 @@ static void ax_bottom_half(struct tasklet_struct *t)
 {
 	struct ax_device *axdev = from_tasklet(axdev, t, tx_tl[0]);
 #endif
-
-#else
-static void ax_bottom_half(struct ax_device *axdev)
-{
-#endif
 	if (test_bit(AX_UNPLUG, &axdev->flags) ||
 	    !test_bit(AX_ENABLE, &axdev->flags) ||
 	    !netif_carrier_ok(axdev->netdev))
 		return;
-#ifdef ENABLE_TX_TASKLET
 	clear_bit(AX_SCHEDULE_TASKLET_TX, &axdev->flags);
-#else
-	clear_bit(AX_SCHEDULE_NAPI, &axdev->flags);
-#endif
 
 	ax_tx_bottom(axdev, 0);
 }
+#endif
 
 static int ax_rx_bottom(struct ax_device *axdev, int budget)
 {
@@ -1328,7 +1334,7 @@ static int ax_rx_bottom(struct ax_device *axdev, int budget)
 	struct list_head *cursor, *next, rx_queue;
 	int ret = 0, work_done = 0;
 #ifndef ENABLE_RX_TASKLET
-	struct napi_struct *napi = &axdev->napi;
+	struct napi_struct *rx_napi = &axdev->rx_napi;
 #endif
 	struct net_device *netdev = axdev->netdev;
 	struct net_device_stats *stats = ax_get_stats(netdev);
@@ -1345,7 +1351,7 @@ static int ax_rx_bottom(struct ax_device *axdev, int budget)
 #ifdef ENABLE_RX_TASKLET
 			netif_receive_skb(skb);
 #else
-			napi_gro_receive(napi, skb);
+			napi_gro_receive(rx_napi, skb);
 #endif
 			work_done++;
 			stats->rx_packets++;
@@ -1425,31 +1431,28 @@ static int ax_submit_rx(struct ax_device *dev,
 #ifdef ENABLE_RX_TASKLET
 		tasklet_schedule(&dev->rx_tl);
 #else
-		napi_schedule(&dev->napi);
+		napi_schedule(&dev->rx_napi);
 #endif
 	}
 
 	return ret;
 }
 
-static inline int __ax_poll(struct ax_device *axdev, int budget)
+static inline int __ax_rx_poll(struct ax_device *axdev, int budget)
 {
 #ifndef ENABLE_RX_TASKLET
-	struct napi_struct *napi = &axdev->napi;
+	struct napi_struct *rx_napi = &axdev->rx_napi;
 #endif
 	int work_done;
 
 	work_done = ax_rx_bottom(axdev, budget);
-#ifndef ENABLE_TX_TASKLET
-	ax_bottom_half(axdev);
-#endif
 
 	if (work_done < budget) {
 #ifndef ENABLE_RX_TASKLET
 #if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
-		napi_complete_done(napi, work_done);
+		napi_complete_done(rx_napi, work_done);
 #else
-		if (!napi_complete_done(napi, work_done))
+		if (!napi_complete_done(rx_napi, work_done))
 			return work_done;
 #endif
 #endif
@@ -1457,14 +1460,7 @@ static inline int __ax_poll(struct ax_device *axdev, int budget)
 #ifdef ENABLE_RX_TASKLET
 			tasklet_schedule(&axdev->rx_tl);
 #else
-			napi_schedule(napi);
-#endif
-
-#ifndef ENABLE_TX_TASKLET
-		else if (ax_check_tx_queue_not_empty(axdev, 
-				(axdev->tx_queue_num - 1)) >= 0 &&
-			 	!list_empty(&axdev->tx_free[0]))
-			napi_schedule(napi);
+			napi_schedule(rx_napi);
 #endif
 	}
 
@@ -1473,24 +1469,54 @@ static inline int __ax_poll(struct ax_device *axdev, int budget)
 
 #ifdef ENABLE_RX_TASKLET
 #if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
-static void ax_poll(unsigned long t)
+static void ax_rx_poll(unsigned long t)
 {
 	struct ax_device *axdev = (struct ax_device *)t;
 #else
-static void ax_poll(struct tasklet_struct *t)
+static void ax_rx_poll(struct tasklet_struct *t)
 {
 	struct ax_device *axdev = from_tasklet(axdev, t, rx_tl);
 #endif
-	__ax_poll(axdev, 256);
+	__ax_rx_poll(axdev, 256);
 }
 
 #else
-
-static int ax_poll(struct napi_struct *napi, int budget)
+static int ax_rx_poll(struct napi_struct *rx_napi, int budget)
 {
-	struct ax_device *axdev = container_of(napi, struct ax_device, napi);
+	struct ax_device *axdev = container_of(rx_napi, struct ax_device, rx_napi);
 
-	return __ax_poll(axdev, budget);
+	return __ax_rx_poll(axdev, budget);
+}
+#endif
+
+#ifndef ENABLE_TX_TASKLET
+static int ax_tx_poll_qx(struct ax_device *axdev, struct napi_struct *tx_napi, 
+						int queue_index, int budget)
+{
+	int work_done = 0;
+
+	if (test_bit(AX_UNPLUG, &axdev->flags) ||
+	    !test_bit(AX_ENABLE, &axdev->flags) ||
+	    !netif_carrier_ok(axdev->netdev))
+		return -1;
+
+	clear_bit(AX_SCHEDULE_NAPI_TX, &axdev->flags);
+
+	ax_tx_bottom(axdev, queue_index, budget, &work_done);
+	
+	if (work_done < budget) {
+#if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
+		napi_complete_done(tx_napi, 0);
+#else
+		if (!napi_complete_done(tx_napi, 0))
+			return 0;
+#endif
+		if (ax_check_tx_queue_not_empty(axdev, 
+			(axdev->tx_queue_num - 1)) >= 0 &&
+			!list_empty(&axdev->tx_free[queue_index]))
+			napi_schedule(tx_napi);
+	}
+	return work_done;
 }
 #endif
 
@@ -1560,7 +1586,7 @@ static u16 ax_select_queue(struct net_device *netdev, struct sk_buff *skb,
 
 #ifdef ENABLE_LSO
 static unsigned char *get_raw_buff_data(struct ax_device *axdev,
-				     	struct sk_buff *skb,
+				    struct sk_buff *skb,
 					int didx, int *opts)
 {
 	u16 sport;
@@ -1593,7 +1619,7 @@ static unsigned char *get_raw_buff_data(struct ax_device *axdev,
 		sport = ((buff[idx]) << 8) | (buff[idx + 1]);
 
 		kunmap_atomic(mapped_page);
-    	} else {
+    } else {
 		buff = skb->data;
 
 		switch (ntohs(skb->protocol)) {
@@ -1617,31 +1643,6 @@ static unsigned char *get_raw_buff_data(struct ax_device *axdev,
 	return buff;
 }
 
-static int get_txq_from_l3_hdr(struct ax_device *axdev, struct sk_buff *skb)
-{
-	int opts;
-	unsigned char *buff;
-
-	switch (ntohs(skb->protocol)) {
-	case 0x0800:
-		buff = get_raw_buff_data(axdev, skb, 20, &opts);
-		break;
-	case 0x86DD:
-		buff = get_raw_buff_data(axdev, skb, 40, &opts);
-		break;
-	default:
-		buff = NULL;
-		break;
-	}
-	if (!buff)
-		return 0;
-
-	if (skb_shinfo(skb)->nr_frags > 0)
-		return (int)buff[1];
-	else
-		return (int)buff[15];
-}
-
 static u16 get_lso_info(struct ax_device *axdev, struct sk_buff *skb,
 			u16 *lso_tci)
 {
@@ -1657,7 +1658,7 @@ static u16 get_lso_info(struct ax_device *axdev, struct sk_buff *skb,
 
 		urg = (skb_shinfo(skb)->nr_frags) ?
 			opts ? IPV4_URG_NON_LINEAR + 40 : IPV4_URG_NON_LINEAR :
-		      	opts ? IPV4_URG_LINEAR + 40 : IPV4_URG_LINEAR;
+		    opts ? IPV4_URG_LINEAR + 40 : IPV4_URG_LINEAR;
 		win = (skb_shinfo(skb)->nr_frags) ?
 			opts ? IPV4_WIN_NON_LINEAR + 40 : IPV4_WIN_NON_LINEAR :
 			opts ? IPV4_WIN_LINEAR + 40 : IPV4_WIN_LINEAR;
@@ -1741,7 +1742,7 @@ static netdev_tx_t ax_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 #ifdef ENABLE_TX_TASKLET
 			set_bit(AX_SCHEDULE_TASKLET_TX, &axdev->flags);
 #else
-			set_bit(AX_SCHEDULE_NAPI, &axdev->flags);
+			set_bit(AX_SCHEDULE_NAPI_TX, &axdev->flags);
 #endif
 			schedule_delayed_work(&axdev->schedule, 0);
 		} else {
@@ -1749,7 +1750,7 @@ static netdev_tx_t ax_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 #ifdef ENABLE_TX_TASKLET
 			tasklet_schedule(&axdev->tx_tl[index]);
 #else
-			napi_schedule(&axdev->napi);
+			napi_schedule(&axdev->tx_napi[index]);
 #endif
 		}
 	}
@@ -1871,12 +1872,7 @@ ax88179_set_features(struct net_device *net, u32 features)
 static void ax_set_carrier(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
-#ifndef ENABLE_RX_TASKLET
-	struct napi_struct *napi = &axdev->napi;
-#endif
 
 	if (axdev->link) {
 		if (!netif_carrier_ok(netdev)) {
@@ -1894,14 +1890,14 @@ static void ax_set_carrier(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 			tasklet_disable(&axdev->rx_tl);
 #else
-			napi_disable(napi);
+			napi_disable(&axdev->rx_napi);
 #endif	
 			netif_carrier_on(netdev);
 			ax_start_rx(axdev);
 #ifdef ENABLE_RX_TASKLET
 			tasklet_enable(&axdev->rx_tl);
 #else
-			napi_enable(napi);
+			napi_enable(&axdev->rx_napi);
 #endif
 
 			if (axdev->chip_version == AX_VERSION_AX88279A)
@@ -1928,24 +1924,28 @@ static void ax_set_carrier(struct ax_device *axdev)
 				ax_write_cmd_nopm(axdev, AX_ACCESS_MAC,
 							AX_MEDIUM_STATUS_MODE, 1, 1, &reg8);
 			}			
-#ifdef ENABLE_TX_TASKLET
 			for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 				tasklet_disable(&axdev->tx_tl[i]);
+#else
+				napi_disable(&axdev->tx_napi[i]);
 #endif
 #ifdef ENABLE_RX_TASKLET
 			tasklet_disable(&axdev->rx_tl);
 #else
-			napi_disable(napi);
+			napi_disable(&axdev->rx_napi);
 #endif			
 			ax_disable(axdev);
 #ifdef ENABLE_RX_TASKLET
 			tasklet_enable(&axdev->rx_tl);
 #else
-			napi_enable(napi);
+			napi_enable(&axdev->rx_napi);
 #endif	
-#ifdef ENABLE_TX_TASKLET
 			for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 				tasklet_enable(&axdev->tx_tl[i]);
+#else
+				napi_enable(&axdev->tx_napi[i]);
 #endif
 		}
 		netdev_info(axdev->netdev, "link down\n");
@@ -1954,9 +1954,7 @@ static void ax_set_carrier(struct ax_device *axdev)
 
 static inline void __ax_work_func(struct ax_device *axdev)
 {
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
 	
 	if (test_bit(AX_UNPLUG, &axdev->flags) || !netif_running(axdev->netdev))
 		return;
@@ -1980,15 +1978,20 @@ static inline void __ax_work_func(struct ax_device *axdev)
 	    netif_carrier_ok(axdev->netdev))
 		tasklet_schedule(&axdev->rx_tl);
 #else
-	if (test_and_clear_bit(AX_SCHEDULE_NAPI, &axdev->flags) &&
+	if (test_and_clear_bit(AX_SCHEDULE_NAPI_RX, &axdev->flags) &&
 	    netif_carrier_ok(axdev->netdev))
-		napi_schedule(&axdev->napi);
+		napi_schedule(&axdev->rx_napi);
 #endif
 #ifdef ENABLE_TX_TASKLET
 	if (test_and_clear_bit(AX_SCHEDULE_TASKLET_TX, &axdev->flags) &&
 	    netif_carrier_ok(axdev->netdev))
 	    for (i = 0; i < axdev->driver_info->tx_num; i++)
 			tasklet_schedule(&axdev->tx_tl[i]);
+#else
+	if (test_and_clear_bit(AX_SCHEDULE_NAPI_TX, &axdev->flags) &&
+	    netif_carrier_ok(axdev->netdev))
+		for (i = 0; i < axdev->driver_info->tx_num; i++)
+			napi_schedule(&axdev->tx_napi[i]);
 #endif
 
 	mutex_unlock(&axdev->control);
@@ -2045,6 +2048,44 @@ static tx_work tx_work_func[4] = {
 	ax_tx_work_func_q2_t,
 	ax_tx_work_func_q3_t
 };
+
+#else
+static int ax_tx_poll_q0(struct napi_struct *data, int budget)
+{
+	struct ax_device *axdev = container_of(data, struct ax_device, 
+					tx_napi[0]);
+	return ax_tx_poll_qx(axdev, data, 0, budget);
+}
+
+static int ax_tx_poll_q1(struct napi_struct *data, int budget)
+{
+	struct ax_device *axdev = container_of(data, struct ax_device, 
+					tx_napi[1]);
+	return ax_tx_poll_qx(axdev, data, 1, budget);
+}
+
+static int ax_tx_poll_q2(struct napi_struct *data, int budget)
+{
+	struct ax_device *axdev = container_of(data, struct ax_device, 
+					tx_napi[2]);
+	return ax_tx_poll_qx(axdev, data, 2, budget);
+}
+
+static int ax_tx_poll_q3(struct napi_struct *data, int budget)
+{
+	struct ax_device *axdev = container_of(data, struct ax_device, 
+					tx_napi[3]);
+	return ax_tx_poll_qx(axdev, data, 3, budget);
+}
+
+typedef int (*tx_napi)(struct napi_struct *data, int budget);
+
+static tx_napi tx_napi_func[4] = { 
+	ax_tx_poll_q0, 
+	ax_tx_poll_q1, 
+	ax_tx_poll_q2,
+	ax_tx_poll_q3
+};
 #endif
 
 int ax_usb_command(struct ax_device *axdev, struct _ax_ioctl_command *info)
@@ -2085,9 +2126,7 @@ static int ax_open(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 	int res = 0;
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
 
 	res = ax_alloc_buffer(axdev);
 	if (res)
@@ -2120,11 +2159,13 @@ static int ax_open(struct net_device *netdev)
 #ifdef ENABLE_RX_TASKLET
 	tasklet_enable(&axdev->rx_tl);
 #else
-	napi_enable(&axdev->napi);
+	napi_enable(&axdev->rx_napi);
 #endif
-#ifdef ENABLE_TX_TASKLET
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_enable(&axdev->tx_tl[i]);
+#else
+		napi_enable(&axdev->tx_napi[i]);
 #endif
 
 	netif_carrier_off(netdev);
@@ -2152,16 +2193,16 @@ static int ax_close(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 	int ret = 0;
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
 
 	if (axdev->driver_info->stop)
 		axdev->driver_info->stop(axdev);
 
-#ifdef ENABLE_TX_TASKLET
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_disable(&axdev->tx_tl[i]);
+#else
+		napi_disable(&axdev->tx_napi[i]);
 #endif
 	clear_bit(AX_ENABLE, &axdev->flags);
 	usb_kill_urb(axdev->intr_urb);
@@ -2172,7 +2213,7 @@ static int ax_close(struct net_device *netdev)
 #ifdef ENABLE_RX_TASKLET
 	tasklet_disable(&axdev->rx_tl);
 #else
-	napi_disable(&axdev->napi);
+	napi_disable(&axdev->rx_napi);
 #endif
 
 	if (axdev->chip_version == AX_VERSION_AX88279A)
@@ -2196,10 +2237,25 @@ static int ax_close(struct net_device *netdev)
 	return ret;
 }
 
+u8 ax_get_water_level_high_val(unsigned int mtu) 
+{
+    u32 tmp;
+	
+	tmp = (mtu * 3 + KB_SIZE) / (2 * KB_SIZE);
+
+	if (tmp < 4)
+		tmp = 4;
+	else if (tmp > 255)
+		tmp = 255;
+
+	return tmp;
+}
+
 static int ax88179_change_mtu(struct net_device *net, int new_mtu)
 {
 	struct ax_device *axdev = netdev_priv(net);
 	u16 reg16;
+	u8 reg8;
 
 	if (new_mtu <= 0 ||
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
@@ -2223,6 +2279,12 @@ static int ax88179_change_mtu(struct net_device *net, int new_mtu)
 		reg16 &= ~AX_MEDIUM_JUMBO_EN;
 		ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
 			     2, 2, &reg16);
+	}
+
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		reg8 = ax_get_water_level_high_val(net->mtu);
+		ax_write_cmd(axdev, AX_ACCESS_MAC, AX_PAUSE_WATERLVL_HIGH,
+			  1, 1, &reg8);
 	}
 
 	return 0;
@@ -2450,6 +2512,7 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 #endif
 
 #ifdef ENABLE_TX_TASKLET
+	/*TASKLET*/
 	if (axdev->chip_version == AX_VERSION_AX88279A) {
 		for (i = 0; i < axdev->driver_info->tx_num; i++) {
 #if KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE
@@ -2468,6 +2531,28 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 #endif
 		tasklet_disable(&axdev->tx_tl[0]);
 	}
+#else
+	/*TX NAPI*/
+	if (axdev->chip_version == AX_VERSION_AX88279A) {
+		for (i = 0; i < axdev->driver_info->tx_num; i++) {
+#if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
+			netif_napi_add_weight(netdev, &axdev->tx_napi[i], tx_napi_func[i], 
+							axdev->driver_info->napi_weight);
+#else
+			netif_napi_add(netdev, &axdev->tx_napi[i], tx_napi_func[i], 
+							axdev->driver_info->napi_weight);
+#endif
+		}
+	} else {
+#if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
+		netif_napi_add_weight(netdev, &axdev->tx_napi[0], ax_tx_poll_q0, 
+						axdev->driver_info->napi_weight);
+#else
+		netif_napi_add(netdev, &axdev->tx_napi[0], ax_tx_poll_q0, 
+						axdev->driver_info->napi_weight);
+#endif
+	}
+
 #endif
 
 	ret = info->bind(axdev);
@@ -2489,17 +2574,17 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 
 #ifdef ENABLE_RX_TASKLET
 #if KERNEL_VERSION(5,10,0) > LINUX_VERSION_CODE
-	tasklet_init(&axdev->rx_tl, ax_poll, (unsigned long) axdev);
+	tasklet_init(&axdev->rx_tl, ax_rx_poll, (unsigned long) axdev);
 #else
-	tasklet_setup(&axdev->rx_tl, ax_poll);
+	tasklet_setup(&axdev->rx_tl, ax_rx_poll);
 #endif
 	tasklet_disable(&axdev->rx_tl);
 #else
 #if KERNEL_VERSION(5, 19, 0) <= LINUX_VERSION_CODE
-	netif_napi_add_weight(netdev, &axdev->napi, ax_poll, 
+	netif_napi_add_weight(netdev, &axdev->rx_napi, ax_rx_poll, 
 					axdev->driver_info->napi_weight);
 #else
-	netif_napi_add(netdev, &axdev->napi, ax_poll, 
+	netif_napi_add(netdev, &axdev->rx_napi, ax_rx_poll, 
 					axdev->driver_info->napi_weight);
 #endif
 #endif
@@ -2537,11 +2622,13 @@ out1:
 #ifdef ENABLE_RX_TASKLET
 	tasklet_kill(&axdev->rx_tl);
 #else
-	netif_napi_del(&axdev->napi);
+	netif_napi_del(&axdev->rx_napi);
 #endif
-#ifdef ENABLE_TX_TASKLET
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_kill(&axdev->tx_tl[i]);
+#else
+		netif_napi_del(&axdev->tx_napi[i]);
 #endif
 	usb_set_intfdata(intf, NULL);
 out:
@@ -2552,9 +2639,7 @@ out:
 static void ax_disconnect(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
-#ifdef ENABLE_TX_TASKLET 
 	int i;
-#endif
 
 	usb_set_intfdata(intf, NULL);
 	if (axdev) {
@@ -2563,11 +2648,13 @@ static void ax_disconnect(struct usb_interface *intf)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_kill(&axdev->rx_tl);
 #else
-		netif_napi_del(&axdev->napi);
+		netif_napi_del(&axdev->rx_napi);
 #endif
-#ifdef ENABLE_TX_TASKLET
 		for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 			tasklet_kill(&axdev->tx_tl[i]);
+#else
+			netif_napi_del(&axdev->tx_napi[i]);
 #endif
 		unregister_netdev(axdev->netdev);
 		free_netdev(axdev->netdev);
@@ -2578,9 +2665,7 @@ static int ax_pre_reset(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
 	struct net_device *netdev;
-#ifdef ENABLE_TX_TASKLET 
 	int i;
-#endif
 
 	if (!axdev)
 		return 0;
@@ -2596,9 +2681,11 @@ static int ax_pre_reset(struct usb_interface *intf)
 
 	clear_bit(AX_ENABLE, &axdev->flags);
 
-#ifdef ENABLE_TX_TASKLET
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_disable(&axdev->tx_tl[i]);
+#else
+		napi_disable(&axdev->tx_napi[i]);
 #endif
 
 	usb_kill_urb(axdev->intr_urb);
@@ -2609,7 +2696,7 @@ static int ax_pre_reset(struct usb_interface *intf)
 #ifdef ENABLE_RX_TASKLET
 	tasklet_disable(&axdev->rx_tl);
 #else
-	napi_disable(&axdev->napi);
+	napi_disable(&axdev->rx_napi);
 #endif
 	return 0;
 }
@@ -2618,9 +2705,7 @@ static int ax_post_reset(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
 	struct net_device *netdev;
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
 
 	if (!axdev)
 		return 0;
@@ -2636,19 +2721,24 @@ static int ax_post_reset(struct usb_interface *intf)
 		mutex_unlock(&axdev->control);
 	}
 	
-#ifdef ENABLE_TX_TASKLET
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_disable(&axdev->tx_tl[i]);
+#else
+		napi_enable(&axdev->tx_napi[i]);
 #endif
 
 #ifdef ENABLE_RX_TASKLET
 	tasklet_enable(&axdev->rx_tl);
 #else
-	napi_enable(&axdev->napi);
+	napi_enable(&axdev->rx_napi);
 #endif
-#ifdef ENABLE_TX_TASKLET
+
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 		tasklet_enable(&axdev->tx_tl[i]);
+#else
+		napi_enable(&axdev->tx_napi[i]);
 #endif
 
 	if (axdev->chip_version == AX_VERSION_AX88279A)
@@ -2666,7 +2756,7 @@ static int ax_post_reset(struct usb_interface *intf)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_schedule(&axdev->rx_tl);
 #else
-		napi_schedule(&axdev->napi);
+		napi_schedule(&axdev->rx_napi);
 #endif
 
 	return 0;
@@ -2701,9 +2791,9 @@ static int ax_runtime_resume(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_disable(&axdev->rx_tl);
 #else
-		struct napi_struct *napi = &axdev->napi;
+		struct napi_struct *rx_napi = &axdev->rx_napi;
 
-		napi_disable(napi);
+		napi_disable(rx_napi);
 #endif
 		set_bit(AX_ENABLE, &axdev->flags);
 
@@ -2722,7 +2812,7 @@ static int ax_runtime_resume(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_enable(&axdev->rx_tl);
 #else
-		napi_enable(napi);
+		napi_enable(rx_napi);
 #endif	
 		clear_bit(AX_SELECTIVE_SUSPEND, &axdev->flags);
 		if (!list_empty(&axdev->rx_done)) {
@@ -2730,7 +2820,7 @@ static int ax_runtime_resume(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 			tasklet_schedule(&axdev->rx_tl);
 #else
-			napi_schedule(&axdev->napi);
+			napi_schedule(&axdev->rx_napi);
 #endif	
 			local_bh_enable();
 		}
@@ -2746,22 +2836,19 @@ static int ax_system_suspend(struct ax_device *axdev)
 {
 	struct net_device *netdev = axdev->netdev;
 	int ret = 0;
-#ifdef ENABLE_TX_TASKLET
 	int i;
-#endif
 
 	netif_device_detach(netdev);
 
 	if (netif_running(netdev) && test_bit(AX_ENABLE, &axdev->flags)) {
-#ifndef ENABLE_RX_TASKLET
-		struct napi_struct *napi = &axdev->napi;
-#endif
 
 		clear_bit(AX_ENABLE, &axdev->flags);
 		usb_kill_urb(axdev->intr_urb);
-#ifdef ENABLE_TX_TASKLET
 		for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 			tasklet_disable(&axdev->tx_tl[i]);
+#else
+			napi_disable(&axdev->tx_napi[i]);
 #endif
 #ifdef ENABLE_INT_POLLING
 		cancel_delayed_work_sync(&axdev->int_polling_work);
@@ -2773,18 +2860,19 @@ static int ax_system_suspend(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 		tasklet_disable(&axdev->rx_tl);
 #else
-		napi_disable(napi);
+		napi_disable(&axdev->rx_napi);
 #endif
 		cancel_delayed_work_sync(&axdev->schedule);
 #ifdef ENABLE_RX_TASKLET
 		tasklet_enable(&axdev->rx_tl);
 #else
-		napi_enable(napi);
+		napi_enable(&axdev->rx_napi);
 #endif
-		
-#ifdef ENABLE_TX_TASKLET
 		for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
 			tasklet_enable(&axdev->tx_tl[i]);
+#else
+			napi_enable(&axdev->tx_napi[i]);
 #endif
 	}
 
@@ -2808,15 +2896,15 @@ static int ax_runtime_suspend(struct ax_device *axdev)
 #ifdef ENABLE_RX_TASKLET
 			tasklet_disable(&axdev->rx_tl);
 #else
-			struct napi_struct *napi = &axdev->napi;
+			struct napi_struct *rx_napi = &axdev->rx_napi;
 
-			napi_disable(napi);
+			napi_disable(rx_napi);
 #endif
 			ax_stop_rx(axdev);
 #ifdef ENABLE_RX_TASKLET
 			tasklet_enable(&axdev->rx_tl);
 #else
-			napi_enable(napi);
+			napi_enable(rx_napi);
 #endif
 		}
 
@@ -2908,6 +2996,14 @@ const struct net_device_ops ax88179a_netdev_ops = {
 #define ASIX_USB_DEVICE(vend, prod, lo, hi, info) { \
 	USB_DEVICE_VER(vend, prod, lo, hi), \
 	.driver_info = (unsigned long)&info \
+}, \
+{ \
+	USB_DEVICE_AND_INTERFACE_INFO(vend, prod, USB_CLASS_COMM, \
+			USB_CDC_SUBCLASS_ETHERNET, USB_CDC_PROTO_NONE), \
+}, \
+{ \
+	USB_DEVICE_AND_INTERFACE_INFO(vend, prod, USB_CLASS_COMM, \
+			USB_CDC_SUBCLASS_NCM, USB_CDC_PROTO_NONE), \
 }
 
 static const struct usb_device_id ax_usb_table[] = {
@@ -2956,7 +3052,66 @@ static struct usb_driver ax_usb_driver = {
 #endif
 };
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 7, 0)
 module_usb_driver(ax_usb_driver);
+#else
+static int ax_usb_config_probe(struct usb_device *udev)
+{
+	int i;
+	int num_cfg = udev->descriptor.bNumConfigurations;
+
+	for (i = 0; i < num_cfg; i++) {
+		struct usb_host_config *cfg = &udev->config[i];
+		struct usb_interface_descriptor *desc;
+
+		if (!cfg->desc.bNumInterfaces)
+			continue;
+
+		desc = &cfg->intf_cache[0]->altsetting->desc;
+
+		if (desc->bInterfaceClass != USB_CLASS_VENDOR_SPEC)
+			continue;
+
+		if (usb_set_configuration(udev, cfg->desc.bConfigurationValue)) {
+			dev_err(&udev->dev,
+				"Failed to set configuration %d\n",
+				cfg->desc.bConfigurationValue);
+			return -ENODEV;
+		}
+
+		return 0;
+	}
+
+	return -ENODEV;
+}
+
+static struct usb_device_driver ax_usb_config_driver = {
+	.name 					= MODULENAME "-config_select",
+	.probe 					= ax_usb_config_probe,
+	.id_table				= ax_usb_table,
+	.generic_subclass 		= 1,
+	.supports_autosuspend 	= 1,
+};
+
+static int __init ax_usb_driver_init(void)
+{
+	int ret;
+
+	ret = usb_register_device_driver(&ax_usb_config_driver, THIS_MODULE);
+	if (ret)
+		return ret;
+	return usb_register(&ax_usb_driver);
+}
+
+static void __exit ax_usb_driver_exit(void)
+{
+	usb_deregister(&ax_usb_driver);
+	usb_deregister_device_driver(&ax_usb_config_driver);
+}
+
+module_init(ax_usb_driver_init);
+module_exit(ax_usb_driver_exit);
+#endif
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

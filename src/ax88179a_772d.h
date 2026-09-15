@@ -53,6 +53,8 @@
 	#define AX_TX_Q2_AHB_FC_EN			0x20
 	#define AX_XGMII_EN					0x80
 #define AX88179A_ETH_TX_GAP				0x0D
+#define AX88179A_FLASH_ACCESS_TIMER		0x20
+	#define AX_FLASH_TIMEOUT			0x20000
 #define AX88179A_FLASH_READ				0x21
 #define AX88179A_FLASH_WEN				0x22
 #define AX88179A_FLASH_WDIS				0x23
@@ -117,7 +119,7 @@
 #define AX88179A_SW_REVERSION			0xFC
 	#define AX88179A_FLASH_MODE			0x80
 #define AX88179A_MAX_MTU				(9 * KB_SIZE)
-#define AX88279A_MAX_MTU				(500 * KB_SIZE)
+#define AX88279A_MAX_MTU				(16 * KB_SIZE)
 
 #define PHY_1000M_STS					0x11
 	#define LINK_1000M_OK				0x1000
@@ -145,6 +147,11 @@
 	#define AX_AES_CLK_SELECT_DIVIDE	0x080000
 	#define AX_XGMAC_TX_CLK_EN			0x100000
 	#define AX_XGMAC_RX_CLK_EN			0x200000
+
+#define AX88279A_PTP_DELAY_2500M		2282
+#define AX88279A_PTP_DELAY_1000M		250
+#define AX88279A_PTP_DELAY_100M			288
+#define AX88279A_PTP_DELAY_10M			3948
 
 struct _179a_rx_pkt_header {
 #ifdef __BIG_ENDIAN
@@ -243,7 +250,7 @@ struct _179a_tx_pkt_header {
 		vlan_tag			:1,
 		CPHI				:1,
 		DICF				:1,
-#ifdef ENABLE_NORMAL_PKT_PTP 
+#ifdef ENABLE_PTP_NORMAL_PKT 
 		normal_pkt_index	:8,
 		max_seg_size		:7,
 		normal_pkt_enable	:1,

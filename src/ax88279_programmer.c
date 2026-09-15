@@ -56,7 +56,7 @@ fprintf(stderr, "%s: Fail to allocate memory.\n", __func__)
 fprintf(stderr, "%s: Load file failed.\n", __func__)
 
 #define AX88279A_IOCTL_VERSION \
-"AX88279A/AX88279 Linux Flash Programming Tool v1.0.0"
+"AX88279A/AX88279 Linux Flash Programming Tool v1.1.0"
 
 const char help_str1[] =
 "./ax88279a_279_programmer help [command]\n"
@@ -118,6 +118,7 @@ static int writeflash_func(struct ax_command_info *info);
 static int writeparameter_func(struct ax_command_info *info);
 static int reload_func(struct ax_command_info *info);
 static int erase_parm_func(struct ax_command_info *info);
+static int erase_all_func(struct ax_command_info *info);
 static int scan_ax_device(struct ifreq *ifr, int inet_sock);
 static int scan_ax_multi_device(struct ifreq *ifr, int inet_sock, 
 	struct ifreq **ifr_list, unsigned int *infe_num);
@@ -166,9 +167,16 @@ struct _command_list ax88279_cmd_list[] = {
 		reload_str2
 	},
 	{
-		"erase",
+		"parm_erase",
 		~0,
 		erase_parm_func,
+		erase_str1,
+		erase_str2
+	},
+	{
+		"all_erase",
+		~0,
+		erase_all_func,
 		erase_str1,
 		erase_str2
 	},
@@ -917,34 +925,6 @@ static int sw_reset(struct ax_command_info *info)
 	return SUCCESS;
 }
 
-static int find_offest_min_index(int *offset_arr, int size)
-{
-	int i = 0;
-	int min = offset_arr[0];
-
-	for (i = 1; i < size; i++) {
-        if (offset_arr[i] < min) {
-            min = offset_arr[i];
-        }
-    }
-
-	return min;
-}
-
-static int find_offest_max_index(int *offset_arr, int size)
-{
-	int i = 0;
-	int max = offset_arr[0];
-
-	for (i = 1; i < size; i++) {
-		if (offset_arr[i] >= max) {
-			max = i;
-		}
-	}
-
-	return max;
-}
-
 static int dump_flash(unsigned char* buf, unsigned int size, 
 						char* file_name) {
 	int i;
@@ -973,12 +953,12 @@ static int writeflash_func(struct ax_command_info *info)
 	struct ifreq *ifr = (struct ifreq *)info->ifr;
 	unsigned char *rbuf = NULL, *filebuf = NULL, *cmpbuf = NULL;
 	FILE *pFile = NULL;
-	unsigned int ret, header_sig_offset, file_length;
+	unsigned int header_sig_offset, file_length;
 	unsigned int para_pri_offset, para_pri_length;
 	unsigned int para_sec_offset, para_sec_length, result, i;
 	unsigned int header_offset, header_len;
 	int c, oi = -1;
-	int product_num = 0;
+	int product_num = 0, ret = 0;
 	char* file_path = NULL;
 	char* product_name = NULL;
 	bool get_dev_name = false;
@@ -1041,13 +1021,13 @@ static int writeflash_func(struct ax_command_info *info)
 	file_length = ftell(pFile);
 	fseek(pFile, 0, SEEK_SET);
 
-	filebuf = (unsigned char *)malloc(MEM_SIZE);
+	filebuf = (unsigned char *)malloc(file_length);
 	if (!filebuf) {
 		PRINT_ALLCATE_MEM_FAIL;
 		ret = -FAIL_ALLCATE_MEM;
 		goto out;
 	}
-	memset(filebuf, 0, MEM_SIZE);
+	memset(filebuf, 0, file_length);
 
 	result = fread(filebuf, 1, file_length, pFile);
 	if (result != file_length) {
@@ -1128,7 +1108,7 @@ static int writeflash_func(struct ax_command_info *info)
 		goto fail;
 	}
 	printf("[INFO] Writing flash\n");
-	ret = write_flash(info, filebuf, 0, MEM_SIZE);
+	ret = write_flash(info, filebuf, 0, file_length);
 	if (ret < 0) {
 		fprintf(stderr, "Fail to write updated FW1 header\n");
 		goto fail;
@@ -1147,26 +1127,8 @@ static int writeflash_func(struct ax_command_info *info)
 	if (ret < 0)
 		goto fail;
 
-	if (memcmp(&cmpbuf[PARAMETER_PRI_HEADER_OFFSET],
-			   &filebuf[PARAMETER_PRI_HEADER_OFFSET], header_len) != 0) {
-		fprintf(stderr, "%s: Compare parameter header failed.\n", __func__);
-		ret = -FAIL_FLASH_WRITE;
-		goto fail;
-	}
-
-	/* Compare the data of parameter */
-	if (set_para_pri_flag &&
-		memcmp(&cmpbuf[para_pri_offset], 
-			   &filebuf[para_pri_offset], para_pri_length) != 0) {
-		fprintf(stderr, "%s: Compare parameter pri failed.\n", __func__);
-		ret = -FAIL_FLASH_WRITE;
-		goto fail;
-	}
-
-	if (set_para_sec_flag &&
-		memcmp(&cmpbuf[para_sec_offset], 
-			   &filebuf[para_sec_offset], para_sec_length) != 0) {
-		fprintf(stderr, "%s: Compare parameter sec failed.\n", __func__);
+	if (memcmp(cmpbuf, filebuf, file_length) != 0) {
+		fprintf(stderr, "%s: Compare parameter failed.\n", __func__);
 		ret = -FAIL_FLASH_WRITE;
 		goto fail;
 	}
@@ -1189,25 +1151,6 @@ out:
 		fclose(pFile);
 
 	return ret;
-}
-
-static unsigned short header_check_calc(unsigned char *fw1_header)
-{
-    unsigned short *pData = (unsigned short *)fw1_header;
-    unsigned long Sum = 0;
-    int i;
-
-    for (i = 0; i < 10; i++) {
-        if (i == 5)
-            continue;
-        Sum += pData[i];
-    }
-
-    while (Sum > 0xFFFF)
-        Sum = (Sum & 0xFFFF) + (Sum >> 16);
-
-    Sum = 0xFFFF - Sum;
-    return (unsigned short)Sum;
 }
 
 static int find_block_index(unsigned char *rpara_databuf, int para_size, 
@@ -1491,37 +1434,6 @@ static int program_para_block(struct ax_command_info *info,
 		return -1;
 	
 	return 0;
-}
-
-static int calculate_para_offset(void *buf)
-{
-	unsigned char *data = (unsigned char *)buf;
-	int offset[8];
-	int len[8];
-	int max;
-
-	DEBUG_PRINT("=== %s - Start\n", __func__);
-
-	offset[0] 	= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_OFFSET]);
-	len[0] 		= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW1_LENGTH]);
-	offset[1] 	= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_OFFSET]);
-	len[1] 		= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW1_LENGTH]);
-	offset[2] 	= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_OFFSET]);
-	len[2] 		= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW1_LENGTH]);
-	offset[3] 	= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_OFFSET]);
-	len[3] 		= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW1_LENGTH]);
-	offset[4] 	= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_OFFSET]);
-	len[4] 		= SWAP_32(*(unsigned int *)&data[PRAM_PRI_FW2_LENGTH]);
-	offset[5] 	= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_OFFSET]);
-	len[5] 		= SWAP_32(*(unsigned int *)&data[MD32_PRI_FW2_LENGTH]);
-	offset[6] 	= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_OFFSET]);
-	len[6] 		= SWAP_32(*(unsigned int *)&data[PRAM_SEC_FW2_LENGTH]);
-	offset[7] 	= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_OFFSET]);
-	len[7] 		= SWAP_32(*(unsigned int *)&data[MD32_SEC_FW2_LENGTH]);
-
-	max = find_offest_max_index(offset, 8);
-
-	return (offset[max] + len[max] + 0x10000) & ~(0xFFFF);
 }
 
 void dump(unsigned char *buf, int len)
@@ -2350,7 +2262,7 @@ static int erase_parm_func(struct ax_command_info *info)
 				*(unsigned long *)&rpara_buf[PARAMETER_PRI_OFFSET];
 	}
 
-	printf("erase %s\n", info->ifr->ifr_name);
+	printf("erase flash parm %s\n", info->ifr->ifr_name);
 	erase_sector_flash(info, PARAMETER_PRI_HEADER_OFFSET);
 	erase_sector_flash(info, para_offset);
 
@@ -2361,6 +2273,49 @@ fail:
 	if (rpara_buf)
 		free(rpara_buf);
 out:
+	return ret;
+}
+
+static int erase_all_func(struct ax_command_info *info)
+{
+	struct ifreq *ifr = (struct ifreq *)info->ifr;
+	int ret, c, i;
+	int oi = -1;
+	char* device;
+	int product_num = 0;
+	bool get_dev_name = false;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	while ((c = getopt_long(info->argc, info->argv,
+				"p:",
+				long_options, &oi)) != -1) {
+		switch (c) {
+		case 'p':
+			device = optarg; 
+			DEBUG_PRINT("%s \r\n", device);
+			if (__check_dev_name(info, device, &product_num))
+				return -1;
+			get_dev_name = true;
+			break;	
+		case '?':
+		default:
+			return -FAIL_INVALID_PARAMETER;
+		}
+	}
+
+	if (get_dev_name == false) {
+		fprintf(stderr,"%s: [ERR] Please provide product name.\n",
+							 __func__);
+		return print_msg("wpara");
+	}
+
+	printf("erase all flash %s\n", info->ifr->ifr_name);
+
+	ret = erase_flash(info);
+
+	sw_reset(info);
+
 	return ret;
 }
 
@@ -2573,12 +2528,10 @@ int main(int argc, char **argv)
 	}
 
 	inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
-#ifndef NOT_PROGRAM 
 	if (scan_ax_device(&ifr, inet_sock)) {
 		printf("No %s found\n", AX88279A_SIGNATURE);
 		return FAIL_SCAN_DEV;
 	}
-#endif
 	for (i = 0; ax88279_cmd_list[i].cmd != NULL; i++) {
 		if (strncmp(argv[1],
 			    ax88279_cmd_list[i].cmd,

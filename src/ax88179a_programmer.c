@@ -60,7 +60,7 @@ fprintf(stderr, "%s: Fail to allocate memory.\n", __func__)
 fprintf(stderr, "%s: Load file failed.\n", __func__)
 
 #define AX88179A_IOCTL_VERSION \
-"AX88179B/AX88179A/AX88772E/AX88772D Linux Flash/eFuse Programming Tool v2.3.0"
+"AX88179B/AX88179A/AX88772E/AX88772D Linux Flash/eFuse Programming Tool v2.4.0"
 
 const char help_str1[] =
 "./ax88179b_179a_772e_772d_programmer help [command]\n"
@@ -91,11 +91,13 @@ const char writeflash_str2[] =
 "        -m\t- Write multi-device\n";
 
 const char writeefuse_str1[] =
-"./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -s [SN] -w [wol] -f [File] --led0 [value]"
+"./ax88179b_179a_772e_772d_programmer wefuse -m [MAC] -M [MN] -n [PS] -s [SN] -w [wol] -f [File] --led0 [value]"
 " --led1 [value] -p [device]\n"
 "    -- AX88179B_179A_772E_772D Write eFuse\n";
 const char writeefuse_str2[] =
 "        -m [MAC]    - MAC address (XX:XX:XX:XX:XX:XX)\n"
+"        -M [MN]     - Manufacture Name (Characters must be less than 19 bytes)\n"
+"        -n [PS]     - Product String (Characters must be less than 19 bytes)\n"
 "        -s [SN]     - Serial number\n"
 "        -w [wol]    - wake on LAN (XXXXXXXX) X:digit\n"
 "        -f [File]   - eFuse file path\n"
@@ -200,6 +202,46 @@ static unsigned char sample_type1[] = {
  0x17, 0x32, 0x20, 0x00
 };
 
+static unsigned char sample_type2[] = {
+ 0x02, 0x41, 0x53, 0x49,
+ 0x58, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00
+};
+
+static unsigned char sample_type3_179A[] = {
+ 0x03, 0x41, 0x58, 0x38,
+ 0x38, 0x31, 0x37, 0x39,
+ 0x41, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00
+};
+
+static unsigned char sample_type3_179B[] = {
+ 0x03, 0x41, 0x58, 0x38,
+ 0x38, 0x31, 0x37, 0x39,
+ 0x42, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00
+};
+
+static unsigned char sample_type3_772D[] = {
+ 0x03, 0x41, 0x58, 0x38,
+ 0x38, 0x37, 0x37, 0x32,
+ 0x44, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00
+};
+
+static unsigned char sample_type3_772E[] = {
+ 0x03, 0x41, 0x58, 0x38,
+ 0x38, 0x37, 0x37, 0x32,
+ 0x45, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00,
+ 0x00, 0x00, 0x00, 0x00
+};
+
 static unsigned char sample_type4[] = {
  0x04, 0x00, 0x00, 0x00,
  0x00, 0x00, 0x00, 0x00,
@@ -229,6 +271,8 @@ static unsigned char sample_type15[] = {
 enum _ef_Type_Def {
 	EF_TYPE_REV = 0x00,
 	EF_TYPE_01 	= 0x01,
+	EF_TYPE_02 	= 0x02,
+	EF_TYPE_03 	= 0x03,
 	EF_TYPE_04 	= 0x04,
 	EF_TYPE_11 	= 0x0B,
 	EF_TYPE_15 	= 0x0F,
@@ -257,6 +301,20 @@ struct _ef_type01 {
 	unsigned char	reserve;
 };
 #define EF_TYPE_STRUCT_SIZE_01	sizeof(struct _ef_type01)
+
+struct _ef_type02 {
+	struct _ef_type	type;
+	unsigned char	m_string[18];
+	unsigned char	reserve;
+};
+#define EF_TYPE_STRUCT_SIZE_02	sizeof(struct _ef_type02)
+
+struct _ef_type03 {
+	struct _ef_type	type;
+	unsigned char	p_string[18];
+	unsigned char	reserve;
+};
+#define EF_TYPE_STRUCT_SIZE_03	sizeof(struct _ef_type03)
 
 struct _ef_type04 {
 	struct _ef_type	type;
@@ -308,6 +366,8 @@ struct _ef_type15 {
 struct _ef_data_struct {
 	union {
 		struct _ef_type01 type01;
+		struct _ef_type02 type02;
+		struct _ef_type03 type03;
 		struct _ef_type04 type04;
 		struct _ef_type11 type11;
 		struct _ef_type15 type15;
@@ -1153,6 +1213,48 @@ static int change_mac_address(struct _ef_data_struct *efuse, unsigned int *mac)
 	return SUCCESS;
 }
 
+static int change_para_manufacture(struct _ef_data_struct *efuse, char *manufac)
+{
+	int index, i;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	index = __find_efuse_index(efuse, EF_TYPE_02, false);
+	if (index == -FAIL_GENERIAL_ERROR) {
+		fprintf(stderr, "%s: Not found type 2 from eFuese file\n",
+			__func__);
+		return -FAIL_GENERIAL_ERROR;
+	}
+
+	memset(efuse[index].ef_data.type02.m_string, 0, 18);
+	memcpy(efuse[index].ef_data.type02.m_string, manufac, strlen(manufac));
+
+	checksum_efuse_block((unsigned char *)&efuse[index]);
+
+	return SUCCESS;
+}
+
+static int change_para_productstr(struct _ef_data_struct *efuse, 
+		char *productstr)
+{
+	int index, i;
+
+	DEBUG_PRINT("=== %s - Start\n", __func__);
+
+	index = __find_efuse_index(efuse, EF_TYPE_03, false);
+	if (index == -FAIL_GENERIAL_ERROR) {
+		fprintf(stderr, "%s: Not found type 3 from eFuese file\n",
+			__func__);
+		return -FAIL_GENERIAL_ERROR;
+	}
+
+	memset(efuse[index].ef_data.type03.p_string, 0, 18);
+	memcpy(efuse[index].ef_data.type03.p_string, productstr, strlen(productstr));
+	checksum_efuse_block((unsigned char *)&efuse[index]);
+
+	return SUCCESS;
+}
+
 static int change_serial_number(struct _ef_data_struct *efuse, char *serial)
 {
 	int index;
@@ -1565,6 +1667,8 @@ static struct option const long_options[] =
 
 struct __wefuse {
 	char *mac_address;
+	char *manufacture;
+	char *product_string;
 	char *serial_num;
 	char *wol;
 	char *file_path;
@@ -1604,6 +1708,36 @@ static void get_efuse_write_data(struct _ef_data_struct *prog_efuse,
 			}
 		} else {
 			memcpy(&prog_efuse[data_efuse_index], &efuse[index], EF_TYPE_STRUCT_SIZE_01);
+		}
+		data_efuse_index++;
+	}
+	if (par->manufacture) {
+		index = __find_efuse_index(efuse, EF_TYPE_02, check_csum);
+		if (index < 0) 
+			memcpy(&prog_efuse[data_efuse_index++], sample_type2, EF_TYPE_STRUCT_SIZE_02);
+		else
+			memcpy(&prog_efuse[data_efuse_index++], &efuse[index], EF_TYPE_STRUCT_SIZE_02);
+	}
+
+	if (par->product_string) {
+		index = __find_efuse_index(efuse, EF_TYPE_03, check_csum);
+		if (index < 0) {
+			if (par->device) {
+				if (!strcasecmp(par->device , "AX88179A"))
+					memcpy(&prog_efuse[data_efuse_index], sample_type3_179A, 
+						EF_TYPE_STRUCT_SIZE_03);
+				else if (!strcasecmp(par->device , "AX88179B"))
+					memcpy(&prog_efuse[data_efuse_index], sample_type3_179B, 
+						EF_TYPE_STRUCT_SIZE_03);
+				else if (!strcasecmp(par->device , "AX88772D"))
+					memcpy(&prog_efuse[data_efuse_index], sample_type3_772D, 
+						EF_TYPE_STRUCT_SIZE_03);
+			 	else if (!strcasecmp(par->device , "AX88772E"))
+					memcpy(&prog_efuse[data_efuse_index], sample_type3_772E, 
+						EF_TYPE_STRUCT_SIZE_03);
+			}
+		} else {
+			memcpy(&prog_efuse[data_efuse_index], &efuse[index], EF_TYPE_STRUCT_SIZE_03);
 		}
 		data_efuse_index++;
 	}
@@ -1869,7 +2003,7 @@ static int writeefuse_func(struct ax_command_info *info)
 	DEBUG_PRINT("=== %s - Start\n", __func__);
 
 	while ((c = getopt_long(info->argc, info->argv,
-				"m:s:w:f:p:l:e:",
+				"m:M:n:s:w:f:p:l:e:",
 				long_options, &oi)) != -1) {
 		switch (c) {
 		case 'm':
@@ -1886,6 +2020,20 @@ static int writeefuse_func(struct ax_command_info *info)
 			dir_write_file_flag = false;
 			if (i != 6)
 				return print_msg("wefuse");
+			break;
+		case 'M':
+			argument.manufacture = optarg;
+			DEBUG_PRINT("%s \r\n", argument.manufacture);
+			dir_write_file_flag = false;
+			if (strlen(argument.manufacture) > 18)
+				return print_msg("wpara");
+			break;
+		case 'n':
+			argument.product_string = optarg;
+			DEBUG_PRINT("%s \r\n", argument.product_string);
+			dir_write_file_flag = false;
+			if (strlen(argument.product_string) > 18)
+				return print_msg("wpara");
 			break;
 		case 's':
 			argument.serial_num = optarg;
@@ -1930,9 +2078,11 @@ static int writeefuse_func(struct ax_command_info *info)
 	}
 
 	/*TODO: fix write whole file feature*/
+#if 1
 	if (dir_write_file_flag == true &&
 		argument.file_path)
 		return print_msg("wefuse");
+#endif
 
 	if (__check_wefuse_parameter(&argument))
 		return print_msg("wefuse");
@@ -1987,6 +2137,28 @@ static int writeefuse_func(struct ax_command_info *info)
 		if (ret < 0) {
 			fprintf(stderr,
 				"%s: Changing MAC address failed.\n",
+				__func__);
+			goto fail;
+		}
+	}
+
+	if (argument.manufacture) {
+		ret = change_para_manufacture(prog_efuse, 
+					argument.manufacture);
+		if (ret < 0) {
+			fprintf(stderr,
+				"%s: Changing manufacture failed.\n",
+				__func__);
+			goto fail;
+		}
+	}
+
+	if (argument.product_string) {
+		ret = change_para_productstr(prog_efuse, 
+				argument.product_string);
+		if (ret < 0) {
+			fprintf(stderr,
+				"%s: Changing Product String failed.\n",
 				__func__);
 			goto fail;
 		}
@@ -2455,12 +2627,10 @@ int main(int argc, char **argv)
 	}
 
 	inet_sock = socket(AF_INET, SOCK_DGRAM, 0);
-#ifndef NOT_PROGRAM 
 	if (scan_ax_device(&ifr, inet_sock)) {
 		printf("No %s found\n", AX88179A_SIGNATURE);
 		return FAIL_SCAN_DEV;
 	}
-#endif
 	for (i = 0; ax88179a_cmd_list[i].cmd != NULL; i++) {
 		if (strncmp(argv[1],
 			    ax88179a_cmd_list[i].cmd,

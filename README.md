@@ -1,12 +1,12 @@
-# Importing a new release
+# AX88179B Linux Driver release tracking
 
-Download the release archive from https://www.asix.com.tw/en/product/USBEthernet/Super-Speed_USB_Ethernet/AX88179B
+ASIX publishes driver releases in the [download page][1] but the repository is not public. This repo tracks (mostly) every release. Companion to Arch Linux package [`asix-ax88179-dkms`](https://aur.archlinux.org/packages/asix-ax88179-dkms).
+
+## Importing a new release
 
 ```
-mv src src.bak
-mkdir src
-tar --strip-components=1 -C src -xj -f /path/to/ASIX_USB_NIC_Linux_Driver_Source_v{version}.tar.bz2`
-chmod -x src/*.c src/*.h src/Makefile src/Readme
-git add src
-git commit -m 'Release {version}'
+just import
 ```
+
+
+[1]: https://www.asix.com.tw/en/product/USBEthernet/Super-Speed_USB_Ethernet/AX88179B

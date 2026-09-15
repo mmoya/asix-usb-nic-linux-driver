@@ -1,12 +1,3 @@
-# Ignore all
-*
-
-# Unignore all with extensions
-!*.*
-
-# Unignore all dirs
-!*/
-
 **.cmd
 **.o
 **.ko
@@ -19,3 +10,5 @@ compile_commands.json
 Module.symvers
 modules.order
 **_programmer
+
+*.tar.bz2

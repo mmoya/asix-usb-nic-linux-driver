@@ -33,8 +33,18 @@ import:
   archive=$(find "$work" -maxdepth 1 -name '*.tar.bz2' -print -quit)
   version=$(basename "$archive" | sed -E 's/^.*_v//; s/\.tar\.bz2$//')
 
+  # Archive entries may or may not carry a leading "./", so extract first
+  # and then locate the single top-level directory.
+  mkdir "$work/x"
+  tar -C "$work/x" -xj -f "$archive"
+  top=$(find "$work/x" -mindepth 1 -maxdepth 1 -type d -not -name . -print -quit)
+  test -n "$top" || { echo "No top-level directory in $archive"; exit 1; }
+
   mv src src.bak
-  mkdir src
-  tar --strip-components=1 -C src -xj -f "$archive"
+  mv "$top" src
+  # Upstream marks every file executable; none of them are.
+  find src -type f -exec chmod 644 {} +
+  # Upstream ships CRLF line endings; normalize text files to LF.
+  { grep -rIlZ $'\r' src || true; } | xargs -0r sed -i 's/\r$//'
   git add src
   git commit -m "Release $version"

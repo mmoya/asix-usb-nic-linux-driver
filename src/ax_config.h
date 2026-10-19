@@ -64,7 +64,7 @@
 #endif
 
 #if (ENABLE_INT_POLLING == 1)
-    #undef  ENABLE_INT_POLLING/
+    #undef  ENABLE_INT_POLLING
     #define ENABLE_INT_POLLING
 #else
     #undef  ENABLE_INT_POLLING

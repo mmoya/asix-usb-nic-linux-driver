@@ -20,48 +20,6 @@
 #include "ax_ptp.h"
 #endif
 
-struct _ax_buikin_setting AX88179A_BULKIN_SIZE[] = {
-	{5, 0x7B, 0x00,	0x17, 0x0F},	//1G, SS
-	{5, 0xC0, 0x02,	0x06, 0x0F},	//1G, HS
-	{7, 0xF0, 0x00,	0x0C, 0x0F},	//100M, Full, SS
-	{6, 0x00, 0x00,	0x06, 0x0F},	//100M, Half, SS
-	{5, 0xC0, 0x04,	0x06, 0x0F},	//100M, Full, HS
-	{7, 0xC0, 0x04,	0x06, 0x0F},	//100M, Half, HS
-	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
-};
-
-struct _ax_buikin_setting AX88772D_BULKIN_SIZE[] = {
-	{0, 0x00, 0x00,	0x00, 0x00},	//1G, SS
-	{0, 0x00, 0x00,	0x00, 0x00},	//1G, HS
-	{0, 0x00, 0x00,	0x00, 0x00},	//100M, Full, SS
-	{0, 0x00, 0x00,	0x00, 0x00},	//100M, Half, SS
-	{5, 0xC0, 0x04,	0x06, 0x0F},	//100M, Full, HS
-	{7, 0xC0, 0x04,	0x06, 0x0F},	//100M, Half, HS
-	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
-};
-
-struct _ax_buikin_setting AX88279_BULKIN_SIZE[] = {
-	{5, 0x10, 0x01,	0x11, 0x0F},	//2.5G
-	{7, 0xB3, 0x01,	0x11, 0x0F},	//1G, SS
-	{7, 0xC0, 0x02,	0x06, 0x0F},	//1G, HS
-	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Full, SS
-	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Half, SS
-	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Full, HS
-	{7, 0x80, 0x01,	0x03, 0x0F},	//100M, Half, HS
-	{7, 0x00, 0x00,	0x03, 0x3F},	//FS
-};
-
-struct _ax_buikin_setting AX88279A_BULKIN_SIZE[] = {
-	{5, 0x62, 0x00, 0x0C, 0x00},    //2.5G
-	{5, 0xF5, 0x00, 0x0C, 0x00},    //1G, SS
-	{5, 0xBE, 0x02, 0x0C, 0x00},    //1G, HS
-	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Full, SS
-	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Half, SS
-	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Full, HS
-	{5, 0x99, 0x09, 0x0C, 0x00},    //100M, Half, HS
-	{5, 0x00, 0x00, 0x0C, 0x00},    //FS
-};
-
 static int ax88179a_set_phy_power(struct ax_device *axdev, bool on, int no_pm);
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)
@@ -612,12 +570,17 @@ void ax88279_get_ephy_fw_version(struct ax_device *axdev)
 int ax88179a_signature(struct ax_device *axdev, struct _ax_ioctl_command *info)
 {
 	if (axdev->chip_version >= AX_VERSION_AX88279)
-		strncpy(info->sig, AX88279A_SIGNATURE, strlen(AX88279A_SIGNATURE));
+		strscpy((char *)info->sig,
+			AX88279A_SIGNATURE,
+			sizeof(info->sig));
 	else if (axdev->chip_version == AX_VERSION_AX88179A_772D)
-		strncpy(info->sig, AX88179A_SIGNATURE, strlen(AX88179A_SIGNATURE));
-	
+		strscpy((char *)info->sig,
+			AX88179A_SIGNATURE,
+			sizeof(info->sig));
+
 	return 0;
 }
+
 
 int ax88179a_read_version(struct ax_device *axdev,
 			  struct _ax_ioctl_command *info)
@@ -1510,29 +1473,27 @@ static int ax88179a_bind(struct ax_device *axdev)
 		axdev->tx_max = AX88772_MAX_TX;
 		axdev->rx_buf = AX88772_BUF_RX_SIZE;
 		axdev->tx_buf = AX88772_BUF_TX_SIZE;
+	} else if (axdev->chip_version == AX_VERSION_AX88279A) {
+		axdev->rx_max = AX88179_MAX_RX;
+		axdev->tx_max = AX88179_MAX_TX;
+		axdev->rx_buf = axdev->driver_info->buf_rx_size;
+		axdev->tx_buf = AX88279_BUF_TX_SIZE;
 	} else {
 		axdev->rx_max = AX88179_MAX_RX;
 		axdev->tx_max = AX88179_MAX_TX;
 		axdev->rx_buf = axdev->driver_info->buf_rx_size;
 		axdev->tx_buf = AX88179_BUF_TX_SIZE;
 	}
-#ifdef ENABLE_LSO
-	if (axdev->chip_version == AX_VERSION_AX88279A) {
-		axdev->tx_casecade_size = axdev->tx_buf - (1 * KB_SIZE);
+
+	axdev->tx_casecade_size = axdev->tx_buf - KB_SIZE;
+#if 0
+	if (axdev->chip_version == AX_VERSION_AX88279A)
 		axdev->gso_max_size = TX_CASECADES_SIZE;
-	} else {
-		axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
-	                          	  (axdev->tx_buf - (1 * KB_SIZE)) 	   : 
-							  	  (TX_CASECADES_SIZE);
-		axdev->gso_max_size = axdev->tx_casecade_size;
-	}
+	else
+		axdev->gso_max_size = axdev->tx_casecade_size - AX88179A_TX_HEADER_SIZE;
 #else
-	axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
-	                          (axdev->tx_buf - (1 * KB_SIZE)) 	   : 
-							  (TX_CASECADES_SIZE);
 	axdev->gso_max_size = axdev->tx_casecade_size;
 #endif
-
 	axdev->mii.supports_gmii = true;
 	axdev->mii.dev = netdev;
 	axdev->mii.mdio_read = ax_mdio_read;
@@ -1823,7 +1784,13 @@ static int ax88179a_hw_init(struct ax_device *axdev, int no_pm)
 	if (ret < 0)
 		return ret;
 	reg8 &= 0xE0;
-	reg8 |= AX_MONITOR_MODE_RWMP;
+
+	if (axdev->saved_wolopts & WAKE_PHY)
+		reg8 |= AX_MONITOR_MODE_RWLC;
+
+	if (axdev->saved_wolopts & WAKE_MAGIC)
+		reg8 |= AX_MONITOR_MODE_RWMP;
+	
 	ret = fnw(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
@@ -2015,8 +1982,20 @@ static int ax88279a_hw_init(struct ax_device *axdev, int no_pm)
 	ret = fnr(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8, 1);
 	if (ret < 0)
 		return ret;
+
+	
+
 	reg8 &= 0xE0;
-	reg8 |= AX_MONITOR_MODE_RWMP;
+
+	if (axdev->saved_wolopts & WAKE_PHY)
+		reg8 |= AX_MONITOR_MODE_RWLC;
+
+	if (axdev->saved_wolopts & WAKE_MAGIC)
+		reg8 |= AX_MONITOR_MODE_RWMP;
+
+	
+	
+
 	ret = fnw(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;
@@ -2025,6 +2004,7 @@ static int ax88279a_hw_init(struct ax_device *axdev, int no_pm)
 				 2, 2, &reg16, 2);
 	if (ret < 0)
 		return ret;
+
 
 	reg16 &= ~AX_MEDIUM_GIGAMODE;
 	ret = fnw(axdev, AX_ACCESS_MAC, AX_MEDIUM_STATUS_MODE,
@@ -2100,12 +2080,26 @@ static int ax88179a_get_ether_link(struct ax_device *axdev)
 	return 0;
 }
 
+static uint32_t ax88179a_cal_size_to_timer(uint32_t size_bytes, uint32_t link_speed_mbps)
+{
+	uint32_t ticks;
+
+    if (!link_speed_mbps || !size_bytes) {
+        return 0;
+    }
+
+    ticks = (uint32_t)(((uint64_t)size_bytes * 10 + link_speed_mbps - 1) / link_speed_mbps);
+
+    return (uint16_t)ticks;
+}
+
 static int ax88179a_set_bulkin_setting(struct ax_device *axdev)
 {
 	struct ax_link_info *link_info = &axdev->link_info;
-	struct _ax_buikin_setting *bulkin_data = NULL;
+	struct _ax_buikin_setting bulkin_data = {0};
 	u8 link_sts;
-	int index = 0, ret;
+	int ret;
+	uint16_t timer_ticks;
 
 	ret = ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, PHYSICAL_LINK_STATUS,
 			       1, 1, &link_sts, 0);
@@ -2114,47 +2108,39 @@ static int ax88179a_set_bulkin_setting(struct ax_device *axdev)
 
 	switch (link_info->eth_speed) {
 	case ETHER_LINK_1000:
-		if (link_sts & AX_USB_SS)
-			index = 0;
-		else if (link_sts & AX_USB_HS)
-			index = 1;
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 1000);
 		break;
 	case ETHER_LINK_100:
-		if (link_sts & AX_USB_SS)
-			index = 2;
-		else if (link_sts & AX_USB_HS)
-			index = 4;
-
-		if (!link_info->full_duplex)
-			index++;
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 100);
 		break;
 	case ETHER_LINK_10:
-		index = 6;
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 10);
 		break;
 	case ETHER_LINK_NONE:
 	default:
-		index = 0;
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 1000);
 		break;
 	};
-	if (axdev->udev->descriptor.bcdDevice == AX_BCDDEVICE_ID_179A)
-		bulkin_data = AX88179A_BULKIN_SIZE;
-	else
-		bulkin_data = AX88772D_BULKIN_SIZE;
+
+	bulkin_data.ctrl = 5;
+	bulkin_data.timer_l = (uint8_t)timer_ticks;
+	bulkin_data.timer_h = (uint8_t)(timer_ticks >> 8);
+	bulkin_data.size = (axdev->rx_buf >> 11);
+	bulkin_data.ifg = 0;
 
 	if (axdev->coalesce == 0) {
-		u16 timer = *((u16 *)&bulkin_data[index].timer_l);
-
-		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer);
+		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer_ticks);
 	} else {
-		u16 timer = ax88179a_usec_to_bin_timer(axdev);
-
-		bulkin_data[index].timer_l = timer & 0xFF;
-		bulkin_data[index].timer_h = (timer >> 8) & 0xFF;
+		timer_ticks = ax88179a_usec_to_bin_timer(axdev);
+		bulkin_data.timer_l = timer_ticks & 0xFF;
+		bulkin_data.timer_h = (timer_ticks >> 8) & 0xFF;
 	}
-	ax_check_rx_biq_size(axdev, &bulkin_data[index]);
-	
+	ax_check_rx_biq_size(axdev, &bulkin_data);
+printk("bulkin_data.timer_l = 0x%02x", bulkin_data.timer_l);
+printk("bulkin_data.timer_h = 0x%02x", bulkin_data.timer_h);
+printk("bulkin_data.size = 0x%02x", bulkin_data.size);
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL,
-				5, 5, &bulkin_data[index]);
+				5, 5, &bulkin_data);
 	if (ret < 0)
 		return ret;
 
@@ -2378,63 +2364,54 @@ static int ax88279_get_ether_link(struct ax_device *axdev)
 static int ax88279_set_bulkin_setting(struct ax_device *axdev)
 {
 	struct ax_link_info *link_info = &axdev->link_info;
-	struct _ax_buikin_setting *bulkin_data = NULL;
+	struct _ax_buikin_setting bulkin_data = {0};
 	u8 link_sts;
-	int index = 7;
 	int ret;
+	uint16_t timer_ticks;
 
 	ret = ax_read_cmd_nopm(axdev, AX_ACCESS_MAC, PHYSICAL_LINK_STATUS,
 			       1, 1, &link_sts, 0);
 	if (ret < 0)
 		return ret;
 
-	if (link_sts & AX_USB_FS) {
-		index = 7;
-	} else {
-		switch (link_info->eth_speed) {
-		case ETHER_LINK_2500:
-			index = 0;
-			break;
-		case ETHER_LINK_1000:
-			if (link_sts & AX_USB_SS)
-				index = 1;
-			else if (link_sts & AX_USB_HS)
-				index = 2;
-			break;
-		case ETHER_LINK_100:
-			if (link_sts & AX_USB_SS)
-				index = 3;
-			else if (link_sts & AX_USB_HS)
-				index = 5;
+	switch (link_info->eth_speed) {
+	case ETHER_LINK_2500:
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 2500);
+		break;
+	case ETHER_LINK_1000:
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 1000);
+		break;
+	case ETHER_LINK_100:
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 100);
+		break;
+	case ETHER_LINK_10:
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 10);
+		break;
+	default:
+		timer_ticks = ax88179a_cal_size_to_timer(axdev->rx_buf, 2500);
+	};
 
-			if (!link_info->full_duplex)
-				index++;
-			break;
-		case ETHER_LINK_10:
-			break;
-		default:
-			return -1;
-		};
-	}
-
-	if (axdev->chip_version == AX_VERSION_AX88279A)
-		bulkin_data = AX88279A_BULKIN_SIZE;
-	else 
-		bulkin_data = AX88279_BULKIN_SIZE;
+	bulkin_data.ctrl = 5;
+	bulkin_data.timer_l = (uint8_t)timer_ticks;
+	bulkin_data.timer_h = (uint8_t)(timer_ticks >> 8);
+	bulkin_data.size = (axdev->rx_buf >> 11);
+	bulkin_data.ifg = 0;
 
 	if (axdev->coalesce == 0) {
-		u16 timer = *((u16 *)&bulkin_data[index].timer_l);
-
-		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer);
+		axdev->coalesce = ax88179a_bin_timer_to_usec(axdev, timer_ticks);
 	} else {
-		u16 timer = ax88179a_usec_to_bin_timer(axdev);
-
-		bulkin_data[index].timer_l = timer & 0xFF;
-		bulkin_data[index].timer_h = (timer >> 8) & 0xFF;
+		timer_ticks = ax88179a_usec_to_bin_timer(axdev);
+		bulkin_data.timer_l = (uint8_t)timer_ticks;
+		bulkin_data.timer_h = (uint8_t)(timer_ticks >> 8);
 	}
-	ax_check_rx_biq_size(axdev, &bulkin_data[index]);
+
+printk("bulkin_data.timer_l = 0x%02x", bulkin_data.timer_l);
+printk("bulkin_data.timer_h = 0x%02x", bulkin_data.timer_h);
+printk("bulkin_data.size = 0x%02x", bulkin_data.size);
+
+	ax_check_rx_biq_size(axdev, &bulkin_data);
 	ret = ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_BULKIN_QCTRL,
-				5, 5, &bulkin_data[index]);
+				5, 5, &bulkin_data);
 	if (ret < 0)
 		return ret;
 
@@ -3748,8 +3725,7 @@ static int ax88179a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		if (!skb)
 			break;
 
-		if ((skb->len + AX88179A_TX_HEADER_SIZE) > remain &&
-		    (skb_shinfo(skb)->gso_size == 0)) {
+		if ((skb->len + AX88179A_TX_HEADER_SIZE) > remain) {
 			__skb_queue_head(&skb_head, skb);
 			break;
 		}
@@ -3869,8 +3845,7 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		if (!skb)
 			break;
 
-		if ((skb->len + AX88179A_TX_HEADER_SIZE) > remain &&
-		    (skb_shinfo(skb)->gso_size == 0)) {
+		if ((skb->len + AX88179A_TX_HEADER_SIZE) > remain) {
 			__skb_queue_head(&skb_head, skb);
 			break;
 		}
@@ -3952,6 +3927,9 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 	}
 	netif_tx_unlock(axdev->netdev);
 
+	if (desc->skb_len == 0)
+		return -1;
+
 	ret = usb_autopm_get_interface_async(axdev->intf);
 	if (ret < 0)
 		return ret;
@@ -3960,9 +3938,6 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 			  usb_sndbulkpipe(axdev->udev, endpoint),
 			  desc->head, (int)(tx_data - (u8 *)desc->head),
 			  (usb_complete_t)ax_write_bulk_callback, desc);
-
-	if (desc->skb_len == 0)
-		return -1;
 
 	ret = usb_submit_urb(desc->urb, GFP_ATOMIC);
 	if (ret < 0)
@@ -3985,15 +3960,18 @@ static int ax88279a_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 
 static int ax88179a_system_suspend(struct ax_device *axdev)
 {
+	netdev_info(axdev->netdev,
+	    "SYSTEM_SUSPEND saved_wolopts=0x%x\n",
+	    axdev->saved_wolopts);
 #ifdef ENABLE_PTP_FUNC
 	ax88279_stop_get_ts(axdev);
 #endif
 
 #ifdef ENABLE_SUSPEND_LP
-	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 0, 
+	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 8, 
 				EPHY_LOW_POWER_EN, 0, NULL);
 #else
-	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 0, 0, 0, NULL);
+	ax_write_cmd_nopm(axdev, AX88179A_WAKEUP_SETTING, 8, 0, 0, NULL);
 #endif
 
 	return 0;
@@ -4003,6 +3981,10 @@ static int ax88179a_system_resume(struct ax_device *axdev)
 {
 	int ret;
 
+	netdev_info(axdev->netdev,
+	    "SYSTEM_RESUME ENTRY saved_wolopts=0x%x\n",
+	    axdev->saved_wolopts);
+
 	if (!ax88179a_check_phy_power(axdev))
 		ax88179a_set_phy_power(axdev, true, 1);
 
@@ -4010,6 +3992,10 @@ static int ax88179a_system_resume(struct ax_device *axdev)
 	if (ret < 0)
 		return ret;
 
+	netdev_info(axdev->netdev,
+	    "SYSTEM_RESUME before hw_init saved_wolopts=0x%x\n",
+	    axdev->saved_wolopts);
+		
 	axdev->driver_info->hw_init(axdev, 1);
 
 	return 0;

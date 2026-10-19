@@ -50,7 +50,7 @@ MODULE_PARM_DESC(bifg, "RX Bulk Inter Frame Gap");
 static int
 ax_submit_rx(struct ax_device *netdev, struct rx_desc *desc, gfp_t mem_flags);
 static void ax_set_carrier(struct ax_device *axdev);
-
+static u32 save_wolpots_global = WAKE_MAGIC;
 static int eth_speed[] = {0, 10, 100, 1000, 2500};
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 18, 0)
@@ -142,6 +142,7 @@ int ax_get_link_ksettings(struct net_device *netdev,
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 	int ret;
+	int lp_adv;
 
 	if (!axdev->mii.mdio_read)
 		return -EOPNOTSUPP;
@@ -154,7 +155,17 @@ int ax_get_link_ksettings(struct net_device *netdev,
 
 	mii_ethtool_get_link_ksettings(&axdev->mii, cmd);
 
+	
+
 	if (axdev->chip_version >= AX_VERSION_AX88279) {
+
+		lp_adv = ax_mmd_read(netdev,
+				     MDIO_MMD_AN,
+				     MDIO_AN_10GBT_STAT);
+
+	
+
+		
 #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 			 cmd->link_modes.supported, 1);
@@ -164,8 +175,8 @@ int ax_get_link_ksettings(struct net_device *netdev,
 				 1);
 
 		linkmode_mod_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
-				 cmd->link_modes.lp_advertising,
-				 1);
+		 cmd->link_modes.lp_advertising,
+		 !!(lp_adv & MDIO_AN_10GBT_STAT_LP2_5G));
 #else
 		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 			 cmd->link_modes.supported);
@@ -173,8 +184,12 @@ int ax_get_link_ksettings(struct net_device *netdev,
 		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
 				 cmd->link_modes.advertising);
 
-		__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
-				 cmd->link_modes.lp_advertising);
+		if (lp_adv & MDIO_AN_10GBT_STAT_LP2_5G)
+			__set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+				  cmd->link_modes.lp_advertising);
+		else
+			__clear_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
+				    cmd->link_modes.lp_advertising);
 #endif
 		if (axdev->intr_link_info.eth_speed == ETHER_LINK_2500)
 			cmd->base.speed = SPEED_2500;
@@ -250,6 +265,10 @@ int ax_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wolinfo)
 	u8 reg8 = 0;
 	int ret;
 
+	
+
+	
+
 	if (wolinfo->wolopts & WAKE_PHY)
 		reg8 |= AX_MONITOR_MODE_RWLC;
 	else
@@ -264,6 +283,13 @@ int ax_set_wol(struct net_device *netdev, struct ethtool_wolinfo *wolinfo)
 	if (ret < 0)
 		return ret;
 
+	axdev->saved_wolopts = wolinfo->wolopts;
+
+	save_wolpots_global = wolinfo->wolopts;
+
+	
+
+	
 	ret = ax_set_s5_wol(axdev, reg8);
 	if (ret < 0)
 		return ret;
@@ -759,8 +785,13 @@ void ax_mdio_write(struct net_device *netdev, int phy_id, int reg, int val)
 
 static void ax_set_unplug(struct ax_device *axdev)
 {
-	if (axdev->udev->state == USB_STATE_NOTATTACHED)
-		set_bit(AX_UNPLUG, &axdev->flags);
+	/*
+	 * Once the USB core enters the disconnect/error path, the driver must
+	 * stop treating the device as usable immediately.  Relying on
+	 * udev->state here leaves a race window where callbacks can still
+	 * schedule NAPI/work while disconnect is tearing the netdev down.
+	 */
+	set_bit(AX_UNPLUG, &axdev->flags);
 }
 
 static int ax_check_tx_queue_not_empty(struct ax_device *axdev, int q_index)
@@ -858,7 +889,8 @@ void ax_write_bulk_callback(struct urb *urb)
 		return;
 
 #ifdef ENABLE_PTP_FUNC
-	if (test_and_clear_bit(AX_TX_TIMESTAMPS, &desc->flags)) {
+	if (!test_bit(AX_UNPLUG, &axdev->flags) &&
+	    test_and_clear_bit(AX_TX_TIMESTAMPS, &desc->flags)) {
 		ax88179a_ptp_ts_read_cmd_async(axdev);
 	}
 #endif
@@ -943,6 +975,7 @@ static void ax_intr_callback(struct urb *urb)
 		break;
 	case -ECONNRESET:
 	case -ESHUTDOWN:
+		ax_set_unplug(axdev);
 		netif_device_detach(axdev->netdev);
 		netif_err(axdev, intr, axdev->netdev,
 			  "Stop submitting intr, status %d\n", status);
@@ -1108,6 +1141,11 @@ static void ax_free_buffer(struct ax_device *axdev)
 
 	kfree(axdev->intr_buff);
 	axdev->intr_buff = NULL;
+
+#ifdef ENABLE_RX_PREEMPT
+	kfree(axdev->pb);
+	axdev->pb = NULL;
+#endif
 }
 
 static int ax_alloc_buffer(struct ax_device *axdev)
@@ -1410,7 +1448,7 @@ static int ax_submit_rx(struct ax_device *dev,
 		return 0;
 
 	usb_fill_bulk_urb(desc->urb, dev->udev, usb_rcvbulkpipe(dev->udev, 2),
-			  desc->head, dev->driver_info->buf_rx_size,
+			  desc->head, dev->rx_buf,
 			  (usb_complete_t)ax_read_bulk_callback, desc);
 
 	ret = usb_submit_urb(desc->urb, mem_flags);
@@ -1551,10 +1589,12 @@ static void ax_tx_timeout(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
 
+#if KERNEL_VERSION(5, 6, 0) > LINUX_VERSION_CODE
+    unsigned int txqueue = 0;
+#endif
+
 	netif_warn(axdev, tx_err, netdev, "Tx timeout\n");
 	
-	/*TODO: EINPROGRESS currently only handles multi-queue case.
-			Other protection mechanisms are needed.*/
 	if (axdev->tx_list[txqueue]->urb->status != -EINPROGRESS)
 		usb_queue_reset_device(axdev->intf);
 	else
@@ -1810,14 +1850,9 @@ static int ax_stop_rx(struct ax_device *axdev)
 	return 0;
 }
 
-static void ax_disable(struct ax_device *axdev)
+static void ax_kill_tx_urbs(struct ax_device *axdev)
 {
 	int i, j;
-
-	if (test_bit(AX_UNPLUG, &axdev->flags)) {
-		ax_drop_queued_tx(axdev);
-		return;
-	}
 
 	for (i = 0; i < axdev->driver_info->tx_num; i++) {
 		for (j = 0; j < axdev->tx_max; j++) {
@@ -1825,7 +1860,19 @@ static void ax_disable(struct ax_device *axdev)
 			usb_kill_urb(axdev->tx_list[i][j].urb);
 		}
 	}
+}
 
+static void ax_disable(struct ax_device *axdev)
+{
+	/*
+	 * Do not skip TX URB killing in the unplug path.  A bulk-out URB
+	 * callback can still arrive after device removal; freeing the TX
+	 * buffers before usb_kill_urb() completes may cause use-after-free.
+	 */
+	if (test_bit(AX_UNPLUG, &axdev->flags))
+		ax_drop_queued_tx(axdev);
+
+	ax_kill_tx_urbs(axdev);
 	ax_stop_rx(axdev);
 }
 
@@ -2192,11 +2239,26 @@ out_free:
 static int ax_close(struct net_device *netdev)
 {
 	struct ax_device *axdev = netdev_priv(netdev);
+	bool unplug = test_bit(AX_UNPLUG, &axdev->flags);
 	int ret = 0;
 	int i;
 
-	if (axdev->driver_info->stop)
-		axdev->driver_info->stop(axdev);
+	/*
+	 * First prevent all new callbacks/work from re-arming RX/TX/NAPI,
+	 * then kill every in-flight URB before buffers can be freed.
+	 */
+	clear_bit(AX_ENABLE, &axdev->flags);
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netif_tx_stop_all_queues(netdev);
+	else
+		netif_stop_queue(netdev);
+
+	usb_kill_urb(axdev->intr_urb);
+#ifdef ENABLE_INT_POLLING
+	cancel_delayed_work_sync(&axdev->int_polling_work);
+#endif
+	cancel_delayed_work_sync(&axdev->schedule);
 
 	for (i = 0; i < axdev->driver_info->tx_num; i++)
 #ifdef ENABLE_TX_TASKLET
@@ -2204,33 +2266,23 @@ static int ax_close(struct net_device *netdev)
 #else
 		napi_disable(&axdev->tx_napi[i]);
 #endif
-	clear_bit(AX_ENABLE, &axdev->flags);
-	usb_kill_urb(axdev->intr_urb);
-#ifdef ENABLE_INT_POLLING
-	cancel_delayed_work_sync(&axdev->int_polling_work);
-#endif
-	cancel_delayed_work_sync(&axdev->schedule);
 #ifdef ENABLE_RX_TASKLET
 	tasklet_disable(&axdev->rx_tl);
 #else
 	napi_disable(&axdev->rx_napi);
 #endif
 
-	if (axdev->chip_version == AX_VERSION_AX88279A)
-		netif_tx_stop_all_queues(axdev->netdev);
-	else
-		netif_stop_queue(axdev->netdev);
+	ax_kill_tx_urbs(axdev);
+	ax_stop_rx(axdev);
+	ax_drop_queued_tx(axdev);
 
-	ret = usb_autopm_get_interface(axdev->intf);
-	if (ret < 0 || test_bit(AX_UNPLUG, &axdev->flags)) {
-		ax_drop_queued_tx(axdev);
-		ax_stop_rx(axdev);
-	} else {
-		ax_disable(axdev);
+	if (!unplug && axdev->driver_info->stop) {
+		ret = usb_autopm_get_interface(axdev->intf);
+		if (!ret) {
+			axdev->driver_info->stop(axdev);
+			usb_autopm_put_interface(axdev->intf);
+		}
 	}
-
-	if (!ret)
-		usb_autopm_put_interface(axdev->intf);
 
 	ax_free_buffer(axdev);
 
@@ -2474,6 +2526,10 @@ static int ax_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	axdev = netdev_priv(netdev);
 	axdev->driver_info = info;
 
+	
+
+	axdev->saved_wolopts = save_wolpots_global ;
+
 	netdev->watchdog_timeo = AX_TX_TIMEOUT;
 	
 	axdev->udev = udev;
@@ -2639,26 +2695,61 @@ out:
 static void ax_disconnect(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
+	struct net_device *netdev;
 	int i;
 
 	usb_set_intfdata(intf, NULL);
-	if (axdev) {
-		axdev->driver_info->unbind(axdev);
-		ax_set_unplug(axdev);
-#ifdef ENABLE_RX_TASKLET
-		tasklet_kill(&axdev->rx_tl);
-#else
-		netif_napi_del(&axdev->rx_napi);
+	if (!axdev)
+		return;
+
+	netdev = axdev->netdev;
+
+	/*
+	 * Set teardown flags before any kill/free operation.  URB callbacks
+	 * check these flags and must not schedule NAPI/work after this point.
+	 */
+	ax_set_unplug(axdev);
+	clear_bit(AX_ENABLE, &axdev->flags);
+	netif_device_detach(netdev);
+
+	if (axdev->chip_version == AX_VERSION_AX88279A)
+		netif_tx_stop_all_queues(netdev);
+	else
+		netif_stop_queue(netdev);
+
+#ifdef ENABLE_INT_POLLING
+	cancel_delayed_work_sync(&axdev->int_polling_work);
 #endif
-		for (i = 0; i < axdev->driver_info->tx_num; i++)
-#ifdef ENABLE_TX_TASKLET
-			tasklet_kill(&axdev->tx_tl[i]);
-#else
-			netif_napi_del(&axdev->tx_napi[i]);
-#endif
-		unregister_netdev(axdev->netdev);
-		free_netdev(axdev->netdev);
+	cancel_delayed_work_sync(&axdev->schedule);
+
+	/*
+	 * If the netdev is running, buffers/URBs are allocated by ax_open().
+	 * Kill all in-flight URBs before unregister_netdev() may free them
+	 * through ndo_stop.
+	 */
+	if (netif_running(netdev)) {
+		usb_kill_urb(axdev->intr_urb);
+		ax_kill_tx_urbs(axdev);
+		ax_stop_rx(axdev);
 	}
+
+	/* unregister_netdev() may call ndo_stop(), so NAPI must still exist. */
+	unregister_netdev(netdev);
+
+#ifdef ENABLE_RX_TASKLET
+	tasklet_kill(&axdev->rx_tl);
+#else
+	netif_napi_del(&axdev->rx_napi);
+#endif
+	for (i = 0; i < axdev->driver_info->tx_num; i++)
+#ifdef ENABLE_TX_TASKLET
+		tasklet_kill(&axdev->tx_tl[i]);
+#else
+		netif_napi_del(&axdev->tx_napi[i]);
+#endif
+
+	axdev->driver_info->unbind(axdev);
+	free_netdev(netdev);
 }
 
 static int ax_pre_reset(struct usb_interface *intf)

@@ -77,7 +77,7 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 #define AX_DRIVER_STRING_279A \
 				"ASIX AX88279A USB Ethernet Controller"
 
-#define DRIVER_VERSION		"4.1.0"
+#define DRIVER_VERSION		"4.2.0"
 #define DRIVER_AUTHOR		"ASIX"
 #define DRIVER_DESC			"ASIX USB Ethernet Controller"
 #define MODULENAME			"ax_usb_nic"
@@ -107,17 +107,14 @@ typedef int (*usb_write_function)(struct ax_device *axdev, u8 cmd, u16 value,
 
 #define	KB_SIZE							1024
 
-#define AX88179_MAX_TX					10
-#define AX88179_MAX_RX					10 // 2 is for short packet
+#define AX88179_MAX_TX					4
+#define AX88179_MAX_RX					8 // 2 is for short packet
 #define AX88772_MAX_TX					4
 #define AX88772_MAX_RX					4
-#ifdef ENABLE_LSO
-#define AX88179_BUF_TX_SIZE				(1000 * KB_SIZE)
-#else
-#define AX88179_BUF_TX_SIZE				(81 * KB_SIZE)
-#endif
-#define AX88772_BUF_TX_SIZE				(24 * KB_SIZE)
-#define TX_CASECADES_SIZE				(16 * KB_SIZE)
+#define AX88279_BUF_TX_SIZE				(48 * KB_SIZE)
+#define AX88179_BUF_TX_SIZE				(24 * KB_SIZE)
+#define AX88772_BUF_TX_SIZE				(16 * KB_SIZE)
+//#define TX_CASECADES_SIZE				(16 * KB_SIZE)
 #define INTBUFSIZE						8
 #define TX_ALIGN						4
 #define RX_ALIGN						8

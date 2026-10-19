@@ -105,10 +105,14 @@ const struct ethtool_ops ax88179_ethtool_ops = {
 	.get_regs			= ax_get_regs,
 };
 
-int ax88179_signature(struct ax_device *axdev, struct _ax_ioctl_command *info)
+int ax88179_signature(struct ax_device *axdev,
+                      struct _ax_ioctl_command *info)
 {
-	strncpy(info->sig, AX88179_SIGNATURE, strlen(AX88179_SIGNATURE));
-	return 0;
+    strscpy((char *)info->sig,
+            AX88179_SIGNATURE,
+            sizeof(info->sig));
+
+    return 0;
 }
 
 int ax88179_read_eeprom(struct ax_device *axdev, struct _ax_ioctl_command *info)
@@ -313,7 +317,7 @@ int ax88179_write_eeprom(struct ax_device *axdev,
 
 IOCTRL_TABLE ax88179_tbl[] = {
 	ax88179_signature,
-	NULL,//ax_usb_command,
+	ax_usb_command,
 	ax88179_read_eeprom,
 	ax88179_write_eeprom,
 };
@@ -868,8 +872,14 @@ static int ax88179_hw_init(struct ax_device *axdev, int no_pm)
 			AX_TXCOE_UDPV6;
 	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_TXCOE_CTL, 1, 1, &reg8);
 
-	reg8 = AX_MONITOR_MODE_PMETYPE | AX_MONITOR_MODE_PMEPOL |
-	       AX_MONITOR_MODE_RWLC | AX_MONITOR_MODE_RWMP;
+	reg8 = AX_MONITOR_MODE_PMETYPE | AX_MONITOR_MODE_PMEPOL;
+
+	if (axdev->saved_wolopts & WAKE_PHY)
+	reg8 |= AX_MONITOR_MODE_RWLC;
+
+	if (axdev->saved_wolopts & WAKE_MAGIC)
+	reg8 |= AX_MONITOR_MODE_RWMP;
+	    
 	ax_write_cmd(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 
 	ax88179_LED_setting(axdev);
@@ -912,10 +922,8 @@ static int ax88179_bind(struct ax_device *axdev)
 	axdev->tx_max = AX88179_MAX_TX;
 	axdev->rx_buf = axdev->driver_info->buf_rx_size;
 	axdev->tx_buf = AX88179_BUF_TX_SIZE;
-	axdev->tx_casecade_size = (TX_CASECADES_SIZE >= axdev->tx_buf) ? 
-							  (axdev->tx_buf - (1 * KB_SIZE)) 	  : 
-							  (TX_CASECADES_SIZE);
-	axdev->gso_max_size = axdev->tx_casecade_size;
+	axdev->tx_casecade_size = axdev->tx_buf - KB_SIZE;
+	axdev->gso_max_size = axdev->tx_casecade_size - AX_TX_HEADER_LEN;
 	axdev->mii.supports_gmii = 1;
 	axdev->mii.dev = netdev;
 	axdev->mii.mdio_read = ax_mdio_read;
@@ -1073,8 +1081,7 @@ static int ax88179_tx_fixup(struct ax_device *axdev, struct tx_desc *desc)
 		if (!skb)
 			break;
 
-		if ((skb->len + AX_TX_HEADER_LEN) > remain &&
-		    (skb_shinfo(skb)->gso_size == 0)) {
+		if ((skb->len + AX_TX_HEADER_LEN) > remain) {
 			__skb_queue_head(&skb_head, skb);
 			break;
 		}
@@ -1265,9 +1272,17 @@ static int ax88179_system_suspend(struct ax_device *axdev)
 	reg16 = AX_RX_CTL_STOP;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
 
-	reg8 = 0x06;
+	if (axdev->saved_wolopts & WAKE_PHY)
+	reg8 |= AX_MONITOR_MODE_RWLC;
+
+	if (axdev->saved_wolopts & WAKE_MAGIC)
+	reg8 |= AX_MONITOR_MODE_RWMP;
+
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_MONITOR_MODE, 1, 1, &reg8);
 
+
+	
+	
 	return 0;
 }
 
@@ -1298,6 +1313,8 @@ static int ax88179_system_resume(struct ax_device *axdev)
 			AX_RX_CTL_AMALL | AX_RX_CTL_AB;
 	ax_write_cmd_nopm(axdev, AX_ACCESS_MAC, AX_RX_CTL, 2, 2, &reg16);
 
+	
+	
 	return 0;
 }
 

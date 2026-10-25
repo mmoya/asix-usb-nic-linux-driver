@@ -1665,11 +1665,12 @@ static int ax88179a_hw_init(struct ax_device *axdev, int no_pm)
 	if (ret < 0)
 		return ret;
 
-	reg8 = 	AX_TXCOE_IP 	| 
-			AX_TXCOE_TCP 	| 
-			AX_TXCOE_UDP 	|
-	       	AX_TXCOE_TCPV6 	| 
-			AX_TXCOE_UDPV6;
+	/* Follow the configured features; ndo_set_features toggles bits. */
+	reg8 = AX_TXCOE_IP;
+	if (axdev->netdev->features & NETIF_F_IP_CSUM)
+		reg8 |= AX_TXCOE_TCP | AX_TXCOE_UDP;
+	if (axdev->netdev->features & NETIF_F_IPV6_CSUM)
+		reg8 |= AX_TXCOE_TCPV6 | AX_TXCOE_UDPV6;
 	ret = fnw(axdev, AX_ACCESS_MAC, AX_TXCOE_CTL, 1, 1, &reg8);
 	if (ret < 0)
 		return ret;

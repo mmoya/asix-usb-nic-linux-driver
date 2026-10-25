@@ -2789,6 +2789,9 @@ static int ax_pre_reset(struct usb_interface *intf)
 #else
 	napi_disable(&axdev->rx_napi);
 #endif
+	/* USB reset requires all bulk I/O to be stopped first. */
+	ax_kill_tx_urbs(axdev);
+	ax_stop_rx(axdev);
 	return 0;
 }
 
@@ -2796,7 +2799,7 @@ static int ax_post_reset(struct usb_interface *intf)
 {
 	struct ax_device *axdev = usb_get_intfdata(intf);
 	struct net_device *netdev;
-	int i;
+	int i, ret = 0;
 
 	if (!axdev)
 		return 0;
@@ -2805,20 +2808,42 @@ static int ax_post_reset(struct usb_interface *intf)
 	if (!netif_running(netdev))
 		return 0;
 
+	/* Reset loses firmware/PHY state; reinitialize as ax_open() does. */
+	if (axdev->chip_version == AX_VERSION_AX88179A_772D) {
+		u16 endpoints = 0;
+
+#ifdef ENABLE_QUEUE_PRIORITY
+		endpoints |= AX_USB_EP5_EN;
+#endif
+#ifdef ENABLE_PTP_FUNC
+		endpoints |= AX_USB_EP4_EN;
+#endif
+		mutex_lock(&axdev->control);
+		ret = ax_write_cmd_nopm(axdev, AX_FW_MODE, AX_FW_MODE_179A,
+					endpoints, 0, NULL);
+		if (ret >= 0)
+			ret = axdev->driver_info->hw_init(axdev, 1);
+		mutex_unlock(&axdev->control);
+		if (ret < 0)
+			goto enable_polling;
+		/* Force a link event so link_reset() restores RX. */
+		netif_carrier_off(netdev);
+	}
+
 	set_bit(AX_ENABLE, &axdev->flags);
+	if (axdev->chip_version == AX_VERSION_AX88179A_772D) {
+		/* Replay rx mode; changes made while disabled were dropped. */
+		netif_addr_lock_bh(netdev);
+		ax88179a_set_multicast(netdev);
+		netif_addr_unlock_bh(netdev);
+	}
 	if (netif_carrier_ok(netdev)) {
 		mutex_lock(&axdev->control);
 		ax_start_rx(axdev);
 		mutex_unlock(&axdev->control);
 	}
-	
-	for (i = 0; i < axdev->driver_info->tx_num; i++)
-#ifdef ENABLE_TX_TASKLET
-		tasklet_disable(&axdev->tx_tl[i]);
-#else
-		napi_enable(&axdev->tx_napi[i]);
-#endif
 
+enable_polling:
 #ifdef ENABLE_RX_TASKLET
 	tasklet_enable(&axdev->rx_tl);
 #else
@@ -2831,6 +2856,10 @@ static int ax_post_reset(struct usb_interface *intf)
 #else
 		napi_enable(&axdev->tx_napi[i]);
 #endif
+
+	/* Nonzero makes the USB core unbind and re-probe the interface. */
+	if (ret < 0)
+		return ret;
 
 	if (axdev->chip_version == AX_VERSION_AX88279A)
 		netif_tx_wake_all_queues(netdev);
